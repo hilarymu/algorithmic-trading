@@ -1,0 +1,7 @@
+{
+  "endpoint": "https://paper-api.alpaca.markets/v2",
+  "api_key": "YOUR_ALPACA_API_KEY",
+  "api_secret": "YOUR_ALPACA_API_SECRET",
+  "account_type": "paper",
+  "gemini_api_key": "YOUR_GEMINI_API_KEY_OPTIONAL"
+}

@@ -1,0 +1,552 @@
+"""
+options_strategy_selector.py
+=============================
+Phase 2: For each screened candidate, find the specific option contract
+(expiry, strike, legs) to trade.
+
+Contract selection logic
+------------------------
+  CSP (Cash-Secured Put):
+    Short put, target delta ~0.30, DTE 21-50 (ideal 35)
+
+  PUT_SPREAD (Bull Put Credit Spread):
+    Short put delta ~0.30, long put delta ~0.15, same expiry
+    Width determined by strike difference
+
+  OTM_PUT_SPREAD (More OTM Bull Put Spread):
+    Short put delta ~0.20, long put delta ~0.10
+
+  CALL_SPREAD (Bull Call Debit Spread):
+    Long call delta ~0.50 (ATM), short call delta ~0.25
+
+Method
+------
+1. Estimate delta-targeted strike via Black-Scholes analytical inversion
+2. Round to nearest standard strike increment
+3. Build 5 candidate contract symbols (target +/- 2 increments)
+4. Batch-fetch Alpaca option snapshots (greeks.delta, latestQuote, openInterest)
+5. Pick the contract whose delta is closest to target, within liquidity filters
+6. Repeat for second leg if spread strategy
+
+Output
+------
+Writes options_pending_entries.json — one entry per selected candidate.
+Each entry has status "pending_review" until executor processes it.
+"""
+
+import json
+import math
+import time
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+# ── Shared helpers from iv_tracker ────────────────────────────────────────────
+import sys
+sys.path.insert(0, str(Path(__file__).parent))
+from iv_tracker import (
+    _get, _standard_increment, _target_expirations,
+    DATA_BASE, CALL_DELAY,
+)
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+PROJECT_DIR      = Path(__file__).parent.parent
+DATA_DIR         = PROJECT_DIR / "data"
+CONFIG_PATH      = PROJECT_DIR / "options_config.json"
+PENDING_PATH     = DATA_DIR / "options_pending_entries.json"
+IV_RANK_PATH     = DATA_DIR / "iv_rank_cache.json"
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+RISK_FREE_RATE   = 0.05          # annualised, used only for strike estimation
+DELTA_TOLERANCE  = 0.12          # accept if |delta_actual - target| <= this
+SNAPSHOT_BATCH   = 100           # contracts per snapshot API call
+
+
+# ==============================================================================
+#  Black-Scholes helpers (strike estimation from target delta)
+# ==============================================================================
+
+def _norm_cdf(x: float) -> float:
+    """Standard normal CDF using math.erf."""
+    return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
+
+
+def _norm_inv(p: float) -> float:
+    """
+    Inverse normal CDF (probit).  Rational approximation; error < 5e-4.
+    Valid for p in (0, 1).
+    """
+    c = [2.515517, 0.802853, 0.010328]
+    d = [1.432788, 0.189269, 0.001308]
+
+    def _inner(t):
+        num = c[0] + c[1] * t + c[2] * t * t
+        den = 1.0 + d[0] * t + d[1] * t * t + d[2] * t * t * t
+        return t - num / den
+
+    if p < 1e-8 or p > 1 - 1e-8:
+        raise ValueError(f"p={p} out of range")
+    if p < 0.5:
+        t = math.sqrt(-2.0 * math.log(p))
+        return -_inner(t)
+    else:
+        t = math.sqrt(-2.0 * math.log(1.0 - p))
+        return _inner(t)
+
+
+def _put_strike_for_delta(S: float, iv: float, T: float,
+                          target_delta_abs: float,
+                          r: float = RISK_FREE_RATE) -> float:
+    """
+    Analytically solve for the put strike K that gives the target
+    absolute delta (e.g. pass 0.30 for a -0.30 delta put).
+
+    Delta_put = N(d1) - 1  =>  N(d1) = 1 - target_delta_abs
+    d1 = [ln(S/K) + (r + 0.5*iv^2)*T] / (iv*sqrt(T))
+    Solving for K:
+        K = S * exp(-d1_target * iv * sqrt(T) + (r + 0.5*iv^2)*T)
+    """
+    if T <= 0 or iv <= 0 or S <= 0:
+        return S * (1.0 - target_delta_abs)   # degenerate fallback
+    d1_target = _norm_inv(1.0 - target_delta_abs)
+    iv_sqrtT  = iv * math.sqrt(T)
+    drift     = (r + 0.5 * iv * iv) * T
+    return S * math.exp(-d1_target * iv_sqrtT + drift)
+
+
+def _call_strike_for_delta(S: float, iv: float, T: float,
+                           target_delta: float,
+                           r: float = RISK_FREE_RATE) -> float:
+    """
+    Analytically solve for the call strike K that gives the target delta
+    (e.g. pass 0.50 for an ATM call, 0.25 for an OTM call).
+
+    Delta_call = N(d1) =>  d1 = N_inv(target_delta)
+    K = S * exp(-d1_target * iv * sqrt(T) + (r + 0.5*iv^2)*T)
+    """
+    if T <= 0 or iv <= 0 or S <= 0:
+        return S   # fallback
+    d1_target = _norm_inv(target_delta)
+    iv_sqrtT  = iv * math.sqrt(T)
+    drift     = (r + 0.5 * iv * iv) * T
+    return S * math.exp(-d1_target * iv_sqrtT + drift)
+
+
+# ==============================================================================
+#  Contract symbol utilities
+# ==============================================================================
+
+def _occ_symbol(underlying: str, expiry: date,
+                opt_type: str, strike: float) -> str:
+    """
+    Build an OCC option symbol.
+    Format: {UNDERLYING}{YYMMDD}{C|P}{STRIKE_8DIGIT}
+    Example: AAPL260516P00250000
+    """
+    date_str   = expiry.strftime("%y%m%d")
+    strike_int = int(round(strike * 1000))
+    return f"{underlying}{date_str}{opt_type.upper()}{strike_int:08d}"
+
+
+def _candidate_strikes(target_K: float, price: float,
+                        n_each_side: int = 2) -> list[float]:
+    """
+    Return 2*n_each_side + 1 standard strikes centred near target_K,
+    all OTM relative to price for a put (i.e. strike <= price).
+    """
+    inc  = _standard_increment(price)
+    base = round(round(target_K / inc) * inc, 2)
+    strikes = set()
+    for offset in range(-n_each_side, n_each_side + 1):
+        s = round(base + offset * inc, 2)
+        if s > 0:
+            strikes.add(s)
+    return sorted(strikes)
+
+
+# ==============================================================================
+#  Alpaca snapshot fetch (rich version — includes greeks + quotes + OI)
+# ==============================================================================
+
+def fetch_option_snapshots(contract_symbols: list[str]) -> dict:
+    """
+    Batch-fetch Alpaca options snapshots.
+    Returns {contract_symbol: {delta, iv, bid, ask, open_interest}}.
+    """
+    result = {}
+    for i in range(0, len(contract_symbols), SNAPSHOT_BATCH):
+        batch = contract_symbols[i : i + SNAPSHOT_BATCH]
+        url   = (f"{DATA_BASE}/v1beta1/options/snapshots"
+                 f"?symbols={','.join(batch)}")
+        data  = _get(url)
+        if not data:
+            time.sleep(CALL_DELAY)
+            continue
+        snaps = data.get("snapshots", data)
+        for sym, snap in snaps.items():
+            try:
+                greeks  = snap.get("greeks") or {}
+                quote   = snap.get("latestQuote") or {}
+                delta   = greeks.get("delta")
+                bid     = quote.get("bp")
+                ask     = quote.get("ap")
+                iv      = snap.get("impliedVolatility")
+                oi      = snap.get("openInterest", 0)
+                if delta is None or bid is None or ask is None:
+                    continue
+                result[sym] = {
+                    "delta":          float(delta),
+                    "iv":             float(iv) if iv else None,
+                    "bid":            float(bid),
+                    "ask":            float(ask),
+                    "open_interest":  int(oi),
+                }
+            except (TypeError, ValueError, KeyError):
+                pass
+        time.sleep(CALL_DELAY)
+    return result
+
+
+# ==============================================================================
+#  Config / cache loaders
+# ==============================================================================
+
+def load_config() -> dict:
+    with open(CONFIG_PATH) as f:
+        return json.load(f)
+
+
+def load_iv_rank_cache() -> dict:
+    if not IV_RANK_PATH.exists():
+        return {}
+    with open(IV_RANK_PATH) as f:
+        return json.load(f)
+
+
+def load_pending_entries() -> list:
+    if not PENDING_PATH.exists():
+        return []
+    with open(PENDING_PATH) as f:
+        return json.load(f)
+
+
+def save_pending_entries(entries: list) -> None:
+    with open(PENDING_PATH, "w") as f:
+        json.dump(entries, f, indent=2)
+
+
+# ==============================================================================
+#  Core: pick one option leg
+# ==============================================================================
+
+def _pick_leg(
+    symbol:           str,
+    expiry:           date,
+    opt_type:         str,    # "P" or "C"
+    target_delta_abs: float,
+    price:            float,
+    iv:               float,
+    config:           dict,
+) -> dict | None:
+    """
+    Find the best-matching contract leg for the given parameters.
+
+    Returns a dict with contract details, or None if no liquid contract found.
+    """
+    filt = config.get("filters", {})
+    min_oi      = filt.get("min_open_interest", 500)
+    max_spread  = filt.get("max_bid_ask_spread_pct", 0.15)
+    cs          = config.get("contract_selection", {})
+
+    dte = (expiry - date.today()).days
+    T   = dte / 365.0
+
+    # Estimate target strike via BSM
+    if opt_type == "P":
+        target_K = _put_strike_for_delta(price, iv, T, target_delta_abs)
+    else:
+        target_K = _call_strike_for_delta(price, iv, T, target_delta_abs)
+
+    # Build candidate symbols (5 strikes centred on estimate)
+    strikes    = _candidate_strikes(target_K, price, n_each_side=2)
+    candidates = [_occ_symbol(symbol, expiry, opt_type, k) for k in strikes]
+
+    # Fetch snapshots for all candidates
+    snaps = fetch_option_snapshots(candidates)
+    if not snaps:
+        return None
+
+    best      = None
+    best_diff = float("inf")
+
+    for sym, snap in snaps.items():
+        delta_raw = snap["delta"]     # positive for calls, negative for puts
+        delta_abs = abs(delta_raw)
+        bid       = snap["bid"]
+        ask       = snap["ask"]
+        oi        = snap["open_interest"]
+
+        # Liquidity filters
+        if oi < min_oi:
+            continue
+        mid = (bid + ask) / 2.0
+        if mid < 0.01:
+            continue
+        spread_pct = (ask - bid) / mid if mid > 0 else 999
+        if spread_pct > max_spread:
+            continue
+
+        # Directional check: put should be OTM (strike < price)
+        try:
+            # Extract strike from OCC symbol (last 8 chars before that)
+            strike_raw = int(sym[-8:]) / 1000.0
+        except (ValueError, IndexError):
+            continue
+        if opt_type == "P" and strike_raw >= price * 1.02:
+            continue   # skip ITM puts
+        if opt_type == "C" and strike_raw <= price * 0.98:
+            continue   # skip ITM calls (for OTM call sells)
+
+        diff = abs(delta_abs - target_delta_abs)
+        if diff < best_diff:
+            best_diff = diff
+            best = {
+                "contract":       sym,
+                "strike":         strike_raw,
+                "expiry":         expiry.strftime("%Y-%m-%d"),
+                "dte":            dte,
+                "opt_type":       opt_type,
+                "delta":          round(delta_raw, 4),
+                "bid":            round(bid, 4),
+                "ask":            round(ask, 4),
+                "mid":            round(mid, 4),
+                "open_interest":  oi,
+                "spread_pct":     round(spread_pct, 4),
+                "iv":             round(snap["iv"], 4) if snap["iv"] else None,
+            }
+
+    if best is None:
+        return None
+    if best_diff > DELTA_TOLERANCE:
+        print(f"    [{symbol}] {opt_type} delta mismatch: "
+              f"target={target_delta_abs:.2f}, best={abs(best['delta']):.2f}")
+        return None
+
+    return best
+
+
+# ==============================================================================
+#  Build a pending entry for one candidate
+# ==============================================================================
+
+def _position_id(symbol: str, strategy: str, expiry: str, strike: float) -> str:
+    today = date.today().strftime("%Y%m%d")
+    return f"{symbol}-{today}-{strategy}-{expiry.replace('-', '')}-{int(strike)}"
+
+
+def select_contract(candidate: dict, config: dict) -> dict | None:
+    """
+    Select the option contract(s) for one screened candidate.
+    Returns a pending_entry dict or None if no suitable contract found.
+    """
+    symbol   = candidate["symbol"]
+    strategy = candidate["strategy"]
+    iv       = candidate.get("iv_current")
+    price    = candidate.get("price")
+    rsi      = candidate.get("rsi")
+    vol_ratio = candidate.get("vol_ratio")
+    iv_rank  = candidate.get("iv_rank")
+    regime   = candidate.get("regime")
+
+    if not iv or not price or iv <= 0:
+        return None
+
+    cs = config.get("contract_selection", {})
+
+    # Find the target expiry
+    expirations = _target_expirations()
+    if not expirations:
+        print(f"    [{symbol}] No valid expirations in DTE window")
+        return None
+    expiry = expirations[0]
+
+    # Strategy-specific leg parameters
+    if strategy == "CSP":
+        target_delta = cs.get("target_delta_csp", 0.30)
+        short_leg = _pick_leg(symbol, expiry, "P", target_delta, price, iv, config)
+        if not short_leg:
+            return None
+        long_leg     = None
+        net_credit   = short_leg["mid"]
+        capital_risk = short_leg["strike"] * 100    # per contract
+
+    elif strategy == "PUT_SPREAD":
+        short_delta = cs.get("target_delta_csp", 0.30)
+        long_delta  = short_delta * 0.5              # long leg half the delta
+        short_leg = _pick_leg(symbol, expiry, "P", short_delta, price, iv, config)
+        if not short_leg:
+            return None
+        long_leg  = _pick_leg(symbol, expiry, "P", long_delta,  price, iv, config)
+        if not long_leg:
+            return None
+        if long_leg["strike"] >= short_leg["strike"]:
+            return None    # legs crossed or same strike
+        net_credit   = short_leg["mid"] - long_leg["mid"]
+        spread_width = short_leg["strike"] - long_leg["strike"]
+        capital_risk = spread_width * 100            # max loss per contract
+
+    elif strategy == "OTM_PUT_SPREAD":
+        short_delta = 0.20
+        long_delta  = 0.10
+        short_leg = _pick_leg(symbol, expiry, "P", short_delta, price, iv, config)
+        if not short_leg:
+            return None
+        long_leg  = _pick_leg(symbol, expiry, "P", long_delta,  price, iv, config)
+        if not long_leg:
+            return None
+        if long_leg["strike"] >= short_leg["strike"]:
+            return None
+        net_credit   = short_leg["mid"] - long_leg["mid"]
+        spread_width = short_leg["strike"] - long_leg["strike"]
+        capital_risk = spread_width * 100
+
+    elif strategy == "CALL_SPREAD":
+        long_delta  = cs.get("target_delta_call_buy", 0.50)
+        short_delta = cs.get("target_delta_call_sell", 0.25)
+        long_leg  = _pick_leg(symbol, expiry, "C", long_delta,  price, iv, config)
+        if not long_leg:
+            return None
+        short_leg = _pick_leg(symbol, expiry, "C", short_delta, price, iv, config)
+        if not short_leg:
+            return None
+        if short_leg["strike"] <= long_leg["strike"]:
+            return None    # legs crossed
+        net_credit   = long_leg["mid"] - short_leg["mid"]   # debit (negative credit)
+        spread_width = short_leg["strike"] - long_leg["strike"]
+        capital_risk = abs(net_credit) * 100                # max loss = debit paid
+
+    else:
+        return None
+
+    if net_credit <= 0.05 and strategy != "CALL_SPREAD":
+        print(f"    [{symbol}] Net credit too thin: ${net_credit:.2f}")
+        return None
+
+    strike_for_id = short_leg["strike"] if short_leg else long_leg["strike"]
+    pid = _position_id(symbol, strategy, short_leg["expiry"] if short_leg
+                       else long_leg["expiry"], strike_for_id)
+
+    entry = {
+        "id":              pid,
+        "symbol":          symbol,
+        "strategy":        strategy,
+        "regime":          regime,
+        "screened_date":   date.today().strftime("%Y-%m-%d"),
+        "iv_rank":         iv_rank,
+        "iv_current":      iv,
+        "rsi":             rsi,
+        "vol_ratio":       vol_ratio,
+        "underlying_close": price,
+        "expiry":          short_leg["expiry"] if short_leg else long_leg["expiry"],
+        "dte":             short_leg["dte"] if short_leg else long_leg["dte"],
+        "short_leg":       short_leg,
+        "long_leg":        long_leg,
+        "net_credit_est":  round(net_credit, 4),
+        "capital_at_risk": round(capital_risk, 2),
+        "near_earnings":   candidate.get("near_earnings", False),
+        "status":          "pending_review",
+        "created_at":      datetime.now(timezone.utc).isoformat(),
+    }
+    return entry
+
+
+# ==============================================================================
+#  Main
+# ==============================================================================
+
+def run(candidates: list[dict] | None = None) -> list[dict]:
+    """
+    Process all screened candidates and build pending entry proposals.
+
+    Parameters
+    ----------
+    candidates : list of candidate dicts from options_screener.screen_candidates().
+                 If None, reads options_candidates.json written by screener.
+
+    Returns list of pending_entry dicts (also written to options_pending_entries.json).
+    """
+    print(f"\n{'='*60}")
+    print(f" Strategy Selector  (Phase 2)")
+    print(f"{'='*60}")
+
+    config = load_config()
+
+    # Load candidates from disk if not passed in
+    if candidates is None:
+        cand_path = DATA_DIR / "options_candidates.json"
+        if not cand_path.exists():
+            print("  WARNING: options_candidates.json not found — run screener first")
+            return []
+        with open(cand_path) as f:
+            cand_doc = json.load(f)
+        candidates = cand_doc.get("candidates", [])
+
+    if not candidates:
+        print("  No candidates to process")
+        return []
+
+    print(f"  Processing {len(candidates)} candidates...")
+
+    # Hard block: near-earnings naked puts
+    safe = []
+    for c in candidates:
+        if c.get("near_earnings") and c.get("strategy") == "CSP":
+            print(f"    [{c['symbol']}] SKIP — near earnings + CSP (naked put, hard block)")
+            continue
+        safe.append(c)
+
+    # Existing pending entries — avoid duplicates within same screened_date
+    existing = load_pending_entries()
+    today    = date.today().strftime("%Y-%m-%d")
+    existing_ids = {
+        e["id"] for e in existing
+        if e.get("screened_date") == today
+    }
+
+    new_entries = []
+    for c in safe:
+        symbol   = c["symbol"]
+        strategy = c["strategy"]
+
+        # Check maximum pending entries per symbol (one per day)
+        candidate_id_prefix = f"{symbol}-{today}"
+        if any(e.startswith(candidate_id_prefix) for e in existing_ids):
+            print(f"    [{symbol}] already has a pending entry today — skipping")
+            continue
+
+        print(f"    [{symbol}] {strategy} — selecting contract...")
+        entry = select_contract(c, config)
+        if entry is None:
+            print(f"    [{symbol}] no suitable contract found")
+            continue
+
+        leg_info = entry["short_leg"] or entry["long_leg"]
+        print(f"    [{symbol}] {strategy}  {leg_info['contract']}  "
+              f"delta={leg_info['delta']:.2f}  "
+              f"mid=${entry['net_credit_est']:.2f}  "
+              f"dte={entry['dte']}")
+
+        new_entries.append(entry)
+        existing_ids.add(entry["id"])
+
+    # Merge new into existing (keep prior days' pending entries)
+    merged = [e for e in existing if e.get("screened_date") != today] + new_entries
+    save_pending_entries(merged)
+
+    print(f"\n  New entries today   : {len(new_entries)}")
+    print(f"  Total in pending    : {len(merged)}")
+    print()
+    return new_entries
+
+
+if __name__ == "__main__":
+    run()

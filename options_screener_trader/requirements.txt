@@ -1,0 +1,8 @@
+# Options Screener Trader — Dependencies
+#
+# Runtime: Python standard library only (json, urllib, math, statistics,
+#          datetime, pathlib, copy, re, zoneinfo)
+# No pip packages required to run the pipeline.
+#
+# Development / testing only:
+pytest>=7.0

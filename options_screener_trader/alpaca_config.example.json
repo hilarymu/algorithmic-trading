@@ -1,0 +1,7 @@
+{
+  "api_key":    "YOUR_PAPER_API_KEY_HERE",
+  "api_secret": "YOUR_PAPER_API_SECRET_HERE",
+  "base_url":   "https://paper-api.alpaca.markets/v2",
+  "account_type": "paper",
+  "description": "Alpaca paper trading account — options enabled"
+}

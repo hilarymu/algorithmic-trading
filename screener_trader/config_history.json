@@ -1,0 +1,434 @@
+[
+  {
+    "timestamp": "2026-04-19T15:18:33.088956+00:00",
+    "regime": "bull",
+    "method": "regime_defaults",
+    "sample_count": 0,
+    "changes": [],
+    "params_before": {
+      "rsi_oversold": 35,
+      "volume_ratio_min": 1.5,
+      "require_above_200ma": true,
+      "rsi_weight": 0.4,
+      "bb_distance_weight": 0.4,
+      "volume_weight": 0.2
+    },
+    "params_after": {
+      "rsi_oversold": 35,
+      "volume_ratio_min": 1.5,
+      "require_above_200ma": true,
+      "rsi_weight": 0.4,
+      "bb_distance_weight": 0.4,
+      "volume_weight": 0.2
+    }
+  },
+  {
+    "timestamp": "2026-04-19T15:23:08.346488+00:00",
+    "regime": "bull",
+    "method": "regime_defaults",
+    "sample_count": 6,
+    "changes": [],
+    "params_before": {
+      "rsi_oversold": 35,
+      "volume_ratio_min": 1.5,
+      "require_above_200ma": true,
+      "rsi_weight": 0.4,
+      "bb_distance_weight": 0.4,
+      "volume_weight": 0.2
+    },
+    "params_after": {
+      "rsi_oversold": 35,
+      "volume_ratio_min": 1.5,
+      "require_above_200ma": true,
+      "rsi_weight": 0.4,
+      "bb_distance_weight": 0.4,
+      "volume_weight": 0.2
+    }
+  },
+  {
+    "timestamp": "2026-04-20T21:08:06.980000+00:00",
+    "regime": "bull",
+    "method": "regime_defaults",
+    "sample_count": 6,
+    "changes": [],
+    "params_before": {
+      "rsi_oversold": 35,
+      "volume_ratio_min": 1.5,
+      "require_above_200ma": true,
+      "rsi_weight": 0.4,
+      "bb_distance_weight": 0.4,
+      "volume_weight": 0.2
+    },
+    "params_after": {
+      "rsi_oversold": 35,
+      "volume_ratio_min": 1.5,
+      "require_above_200ma": true,
+      "rsi_weight": 0.4,
+      "bb_distance_weight": 0.4,
+      "volume_weight": 0.2
+    }
+  },
+  {
+    "timestamp": "2026-04-21T20:29:08.790476+00:00",
+    "regime": "bull",
+    "method": "regime_defaults",
+    "sample_count": 6,
+    "changes": [],
+    "params_before": {
+      "rsi_oversold": 35,
+      "volume_ratio_min": 1.5,
+      "require_above_200ma": true,
+      "rsi_weight": 0.4,
+      "bb_distance_weight": 0.4,
+      "volume_weight": 0.2
+    },
+    "params_after": {
+      "rsi_oversold": 35,
+      "volume_ratio_min": 1.5,
+      "require_above_200ma": true,
+      "rsi_weight": 0.4,
+      "bb_distance_weight": 0.4,
+      "volume_weight": 0.2
+    }
+  },
+  {
+    "timestamp": "2026-04-21T20:32:36.545050+00:00",
+    "regime": "bull",
+    "method": "regime_defaults",
+    "sample_count": 6,
+    "changes": [],
+    "params_before": {
+      "rsi_oversold": 35,
+      "volume_ratio_min": 1.5,
+      "require_above_200ma": true,
+      "rsi_weight": 0.4,
+      "bb_distance_weight": 0.4,
+      "volume_weight": 0.2
+    },
+    "params_after": {
+      "rsi_oversold": 35,
+      "volume_ratio_min": 1.5,
+      "require_above_200ma": true,
+      "rsi_weight": 0.4,
+      "bb_distance_weight": 0.4,
+      "volume_weight": 0.2
+    }
+  },
+  {
+    "timestamp": "2026-04-21T20:34:49.091998+00:00",
+    "regime": "bull",
+    "method": "regime_defaults",
+    "sample_count": 6,
+    "changes": [],
+    "params_before": {
+      "rsi_oversold": 35,
+      "volume_ratio_min": 1.5,
+      "require_above_200ma": true,
+      "rsi_weight": 0.4,
+      "bb_distance_weight": 0.4,
+      "volume_weight": 0.2
+    },
+    "params_after": {
+      "rsi_oversold": 35,
+      "volume_ratio_min": 1.5,
+      "require_above_200ma": true,
+      "rsi_weight": 0.4,
+      "bb_distance_weight": 0.4,
+      "volume_weight": 0.2
+    }
+  },
+  {
+    "timestamp": "2026-04-21T20:53:58.020703+00:00",
+    "regime": "bull",
+    "method": "data_derived",
+    "sample_count": 1302,
+    "changes": [
+      "rsi_oversold: 35 -> 20",
+      "volume_ratio_min: 1.5 -> 2.0",
+      "require_above_200ma: True -> False",
+      "rsi_weight: 0.4 -> 0.41",
+      "bb_distance_weight: 0.4 -> 0.31",
+      "volume_weight: 0.2 -> 0.28"
+    ],
+    "params_before": {
+      "rsi_oversold": 35,
+      "volume_ratio_min": 1.5,
+      "require_above_200ma": true,
+      "rsi_weight": 0.4,
+      "bb_distance_weight": 0.4,
+      "volume_weight": 0.2
+    },
+    "params_after": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 2.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    }
+  },
+  {
+    "timestamp": "2026-04-22T03:08:53.419486+00:00",
+    "regime": "bull",
+    "method": "data_derived",
+    "sample_count": 1317,
+    "changes": [],
+    "params_before": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 2.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    },
+    "params_after": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 2.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    }
+  },
+  {
+    "timestamp": "2026-04-22T18:47:50.118927+00:00",
+    "regime": "bull",
+    "method": "data_derived",
+    "sample_count": 1332,
+    "changes": [],
+    "params_before": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 2.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    },
+    "params_after": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 2.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    }
+  },
+  {
+    "timestamp": "2026-04-22T19:31:12.576615+00:00",
+    "regime": "bull",
+    "method": "data_derived (bull)",
+    "sample_count": 1337,
+    "changes": [
+      "volume_ratio_min: 2.0 -> 0.8"
+    ],
+    "params_before": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 2.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    },
+    "params_after": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 0.8,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    }
+  },
+  {
+    "timestamp": "2026-04-22T19:31:46.774121+00:00",
+    "regime": "bull",
+    "method": "data_derived (bull)",
+    "sample_count": 1337,
+    "changes": [
+      "volume_ratio_min: 0.8 -> 1.0"
+    ],
+    "params_before": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 0.8,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    },
+    "params_after": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 1.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    }
+  },
+  {
+    "timestamp": "2026-04-23T11:00:07.764101+00:00",
+    "regime": "bull",
+    "method": "data_derived (bull)",
+    "sample_count": 1337,
+    "changes": [],
+    "params_before": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 1.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    },
+    "params_after": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 1.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    }
+  },
+  {
+    "timestamp": "2026-04-24T11:00:09.014319+00:00",
+    "regime": "bull",
+    "method": "data_derived (bull)",
+    "sample_count": 1352,
+    "changes": [],
+    "params_before": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 1.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    },
+    "params_after": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 1.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    }
+  },
+  {
+    "timestamp": "2026-04-25T14:29:10.050476+00:00",
+    "regime": "bull",
+    "method": "data_derived (bull)",
+    "sample_count": 1365,
+    "changes": [],
+    "params_before": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 1.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    },
+    "params_after": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 1.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    }
+  },
+  {
+    "timestamp": "2026-04-26T11:00:07.999529+00:00",
+    "regime": "bull",
+    "method": "data_derived (bull)",
+    "sample_count": 1380,
+    "changes": [],
+    "params_before": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 1.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    },
+    "params_after": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 1.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    }
+  },
+  {
+    "timestamp": "2026-04-27T11:09:31.697057+00:00",
+    "regime": "bull",
+    "method": "data_derived (bull)",
+    "sample_count": 1395,
+    "changes": [],
+    "params_before": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 1.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    },
+    "params_after": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 1.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    }
+  },
+  {
+    "timestamp": "2026-04-28T11:00:13.532954+00:00",
+    "regime": "bull",
+    "method": "data_derived (bull)",
+    "sample_count": 1395,
+    "changes": [
+      "rsi_weight: 0.41 -> 0.4",
+      "bb_distance_weight: 0.31 -> 0.33",
+      "volume_weight: 0.28 -> 0.27"
+    ],
+    "params_before": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 1.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.31,
+      "volume_weight": 0.28
+    },
+    "params_after": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 1.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.4,
+      "bb_distance_weight": 0.33,
+      "volume_weight": 0.27
+    }
+  },
+  {
+    "timestamp": "2026-04-29T11:00:16.730514+00:00",
+    "regime": "bull",
+    "method": "data_derived (bull)",
+    "sample_count": 1421,
+    "changes": [
+      "rsi_weight: 0.4 -> 0.41",
+      "volume_weight: 0.27 -> 0.26"
+    ],
+    "params_before": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 1.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.4,
+      "bb_distance_weight": 0.33,
+      "volume_weight": 0.27
+    },
+    "params_after": {
+      "rsi_oversold": 20,
+      "volume_ratio_min": 1.0,
+      "require_above_200ma": false,
+      "rsi_weight": 0.41,
+      "bb_distance_weight": 0.33,
+      "volume_weight": 0.26
+    }
+  }
+]

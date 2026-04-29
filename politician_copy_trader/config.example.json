@@ -1,0 +1,14 @@
+{
+  "alpaca_key": "YOUR_ALPACA_API_KEY",
+  "alpaca_secret": "YOUR_ALPACA_API_SECRET",
+  "alpaca_base": "https://paper-api.alpaca.markets/v2",
+  "trade_amount_usd": 2000,
+  "pages_to_fetch": 2,
+  "politicians": [
+    { "id": "C001047", "name": "Shelley Moore Capito", "party": "R", "state": "WV", "score": 92.2 },
+    { "id": "K000398", "name": "Thomas Kean Jr",       "party": "R", "state": "NJ", "score": 73.8 },
+    { "id": "F000110", "name": "Cleo Fields",          "party": "D", "state": "LA", "score": 65.4 },
+    { "id": "G000583", "name": "Josh Gottheimer",      "party": "D", "state": "NJ", "score": 60.9 },
+    { "id": "K000389", "name": "Ro Khanna",            "party": "D", "state": "CA", "score": 71.0 }
+  ]
+}

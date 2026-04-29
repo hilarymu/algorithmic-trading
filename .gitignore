@@ -1,0 +1,57 @@
+# ================================================================
+# CREDENTIALS  --  NEVER commit these
+# ================================================================
+**/alpaca_config.json
+politician_copy_trader/config.json
+
+# ================================================================
+# Claude Code session data
+# ================================================================
+.claude/
+
+# ================================================================
+# Logs  (date-stamped, machine-specific, large)
+# ================================================================
+logs/
+**/logs/
+*.log
+
+# ================================================================
+# Python cache
+# ================================================================
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ================================================================
+# Personal trading history  --  keep private
+# ================================================================
+**/picks_history.json
+**/trades_executed.json
+**/options_picks_history.json
+
+# ================================================================
+# Generated / transient state files
+# (written every run cycle, not useful in version control)
+# ================================================================
+**/positions_state.json
+**/pending_entries.json
+**/screener_results.json
+**/research_picks.json
+**/market_regime.json
+**/improvement_report.json
+
+# ================================================================
+# Large generated data / cache files
+# ================================================================
+**/iv_rank_cache.json
+**/iv_history.json
+
+# ================================================================
+# OS noise
+# ================================================================
+Thumbs.db
+.DS_Store
+desktop.ini
