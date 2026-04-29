@@ -4,6 +4,13 @@ Three independent, fully-automated paper trading strategies built on the [Alpaca
 
 > **Paper trading only** — all orders execute against Alpaca's simulated environment. No real money is involved.
 
+**What this project demonstrates:**
+- **Autonomous scheduling & orchestration** — three independent pipelines run unattended via Windows Task Scheduler across daily, weekly, and intraday cadences
+- **Self-optimising ML-adjacent pipelines** — RSI loop back-fills its own historical returns, detects market regimes, and rewrites its own config each week from performance data
+- **API integration** — Alpaca REST (order management + market data), Google Gemini AI (qualitative research layer), Capitol Trades HTML scraping (no API key required)
+- **Full position lifecycle management** — entry, trailing stops, hard stops, add-down ladder orders, and RSI-recovery exits all handled automatically
+- **Production-quality architecture documentation** — all three systems documented to the [arc42](https://arc42.org) standard with Architecture Decision Records (ADRs)
+
 ---
 
 ## Systems at a glance
