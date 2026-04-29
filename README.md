@@ -43,6 +43,8 @@ Mon–Fri    monitor.py           → RSI exit · trailing stop · hard stop · 
            every 15 min, 09:25–16:05 ET
 ```
 
+<img src="screener_trader/docs/screenshots/dashboard.png" width="900" alt="Screener Trader live dashboard">
+
 [Full architecture docs →](screener_trader/docs/architecture/README.md)
 
 ---
