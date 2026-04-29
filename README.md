@@ -129,7 +129,7 @@ Mon–Fri    monitor.py           → RSI exit · trailing stop · hard stop · 
 
 ```powershell
 # 1. Clone
-git clone https://github.com/hilarymu/paper-trading-systems.git
+git clone https://github.com/hilarymu/algorithmic-trading.git
 cd paper-trading-systems\screener_trader
 
 # 2. Credentials
