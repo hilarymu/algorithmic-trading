@@ -29,6 +29,7 @@ Earnings note:
 """
 
 import json
+import math
 import time
 import urllib.request
 import urllib.error
@@ -36,7 +37,7 @@ import urllib.parse
 import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from statistics import mean
+from statistics import mean, stdev
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 PROJECT_DIR  = Path(__file__).parent.parent
@@ -488,6 +489,103 @@ def load_earnings_calendar():
     return {}
 
 
+# ── HV30 fallback (used when Alpaca options feed returns 0 readings) ───────────
+#
+# When live IV is unavailable we compute 30-day realised volatility from equity
+# bar history (which Alpaca always returns) and scale it by HV30_IV_SCALE — the
+# typical implied/realised vol ratio for S&P 500 equities.  This keeps
+# iv_history.json and iv_rank_cache.json fresh every day regardless of whether
+# the indicative options feed is working.  Real IV overwrites proxy on any day
+# it becomes available (append_today_iv never backfills; it only adds today).
+
+HV30_IV_SCALE  = 1.30   # typical equity IV/HV ratio (backfill default)
+HV30_LOOKBACK  = 50     # calendar days to fetch (~36 trading-day closes)
+HV30_MIN_OBS   = 22     # minimum log-returns needed for a valid HV30
+
+
+def _fetch_equity_bars_hv30(symbols):
+    """
+    Fetch ~HV30_LOOKBACK calendar days of daily closes for equity symbols.
+    Returns {symbol: [(date_str, close), ...]} sorted ascending.
+    """
+    end   = date.today()
+    start = end - timedelta(days=HV30_LOOKBACK)
+    start_s, end_s = start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+    eligible = [s for s in symbols if "." not in s and "/" not in s]
+    result   = {}
+
+    for i in range(0, len(eligible), 100):
+        batch = eligible[i : i + 100]
+        url = (
+            f"{DATA_BASE}/v2/stocks/bars?symbols={','.join(batch)}"
+            f"&timeframe=1Day&start={start_s}&end={end_s}&feed=iex&limit=10000"
+        )
+        data = _get(url)
+        if data:
+            for sym, bars in data.get("bars", {}).items():
+                closes = []
+                for bar in bars:
+                    try:
+                        closes.append((bar["t"][:10], float(bar["c"])))
+                    except (KeyError, ValueError):
+                        pass
+                if closes:
+                    result[sym] = sorted(closes)
+        time.sleep(CALL_DELAY)
+
+    return result
+
+
+def _hv30_from_closes(closes):
+    """
+    Compute annualised 30-day realised vol from a list of (date_str, close).
+    Returns scaled IV proxy float, or None if insufficient data.
+    """
+    prices = [c for _, c in closes]
+    if len(prices) < HV30_MIN_OBS + 1:
+        return None
+
+    log_rets = [
+        math.log(prices[i] / prices[i - 1])
+        for i in range(max(1, len(prices) - 30), len(prices))
+        if prices[i - 1] > 0 and prices[i] > 0
+    ]
+    if len(log_rets) < HV30_MIN_OBS:
+        return None
+
+    hv30 = stdev(log_rets) * math.sqrt(252)
+    iv   = round(hv30 * HV30_IV_SCALE, 6)
+    return iv if 0.005 <= iv <= 5.0 else None
+
+
+def _compute_hv30_today(eligible_prices):
+    """
+    HV30 proxy for today's IV tracker entry when live options data is absent.
+    Fetches equity bar history and computes HV30 × HV30_IV_SCALE per symbol.
+    Returns {symbol: iv_proxy}.
+    """
+    print(f"\n  Falling back to HV30 proxy (no live options data)...")
+    bars = _fetch_equity_bars_hv30(list(eligible_prices.keys()))
+    print(f"  Equity bars fetched: {len(bars)} symbols")
+
+    sym_iv = {}
+    for sym, closes in bars.items():
+        iv = _hv30_from_closes(closes)
+        if iv:
+            sym_iv[sym] = iv
+
+    if sym_iv:
+        ranked = sorted(sym_iv.values())
+        median = ranked[len(ranked) // 2]
+        print(f"  HV30 proxy computed : {len(sym_iv)} symbols | "
+              f"median={median:.1%}  scale={HV30_IV_SCALE}×")
+    else:
+        print(f"  HV30 proxy: no symbols with sufficient bar history")
+
+    return sym_iv
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def run():
@@ -519,6 +617,7 @@ def run():
     print(f"  Constructed {len(contract_to_sym)} contract symbols "
           f"({len(eligible)} underlyings × ~3 strikes)")
 
+    data_source = "live"   # may be overridden to "hv30_proxy" below
     print(f"\n  Fetching IV snapshots ({len(contract_to_sym)} contracts "
           f"in batches of {BATCH_SNAPSHOTS})...")
     iv_snaps = fetch_iv_snapshots(contract_to_sym)
@@ -529,12 +628,17 @@ def run():
           f"({len(eligible) - len(sym_iv)} no data)")
 
     if not sym_iv:
-        print("\n  WARNING: 0 IV readings. Possible causes:")
+        print("\n  WARNING: 0 live IV readings. Possible causes:")
         print("    - Market closed / pre-market (options data may be stale)")
         print("    - Alpaca indicative feed lag (try re-running after 16:30 ET)")
         print("    - Contract symbols constructed outside available strikes")
-        print("  iv_history.json NOT updated today.")
-        return {"date": today_str, "iv_fetched": 0, "with_iv_rank": 0}
+        sym_iv = _compute_hv30_today(eligible)
+        if not sym_iv:
+            print("  HV30 proxy also failed. iv_history.json NOT updated today.")
+            return {"date": today_str, "iv_fetched": 0, "with_iv_rank": 0}
+        data_source = "hv30_proxy"
+    else:
+        data_source = "live"
 
     # ── 4. Update IV history ───────────────────────────────────────────────────
     print(f"\n  Updating iv_history.json...")
@@ -581,10 +685,11 @@ def run():
     print(f"\n  Done.\n")
 
     return {
-        "date":         today_str,
-        "universe":     len(universe),
-        "iv_fetched":   len(sym_iv),
-        "with_iv_rank": with_rank,
+        "date":          today_str,
+        "universe":      len(universe),
+        "iv_fetched":    len(sym_iv),
+        "iv_source":     data_source,
+        "with_iv_rank":  with_rank,
         "near_earnings": near_earn,
     }
 
