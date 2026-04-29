@@ -17,7 +17,7 @@ Three independent, fully-automated paper trading strategies built on the [Alpaca
 
 | System | Strategy | Schedule | Dashboard |
 |--------|----------|----------|-----------|
-| [Screener Trader](#1-screener-trader) | S&P 500 mean-reversion (RSI + Bollinger Bands) | Weekly screener · Daily monitor | `localhost:8766` ![Screener Dashboard](docs/screenshots/dashboard.png |
+| [Screener Trader](#1-screener-trader) | S&P 500 mean-reversion (RSI + Bollinger Bands) | Weekly screener · Daily monitor | `localhost:8766` ![Screener Dashboard](docs/screenshots/dashboard.png) |
 | [Options Screener Trader](#2-options-screener-trader) | Cash-secured puts on high-IV oversold stocks | Daily post-close pipeline | `localhost:8767` |
 | [Politician Copy Trader](#3-politician-copy-trader) | Mirror congressional stock disclosures | Daily Capitol Trades poll | `localhost:8765` |
 
