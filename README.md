@@ -1,4 +1,4 @@
-# Autonomous Paper Trading Systems
+# Autonomous Algorithmic Trading Systems
 
 Three independent, fully-automated paper trading strategies built on the [Alpaca Markets](https://alpaca.markets) paper API. Each strategy runs on a schedule via Windows Task Scheduler, manages its own positions end-to-end, and maintains a local HTTP dashboard for live monitoring.
 
