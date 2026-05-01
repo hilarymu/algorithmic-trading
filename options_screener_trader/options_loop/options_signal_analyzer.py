@@ -45,7 +45,8 @@ CANDS_PATH   = DATA_DIR / "options_candidates.json"
 PICKS_PATH   = DATA_DIR / "options_picks_history.json"
 STATE_PATH   = DATA_DIR / "positions_state.json"
 OUTPUT_PATH  = DATA_DIR / "options_signal_quality.json"
-REGIME_PATH  = DATA_DIR / "market_regime.json"
+# Regime is written by screener_trader's RSI loop — read from the sibling project
+REGIME_PATH  = PROJECT_DIR.parent / "screener_trader" / "market_regime.json"
 
 # ── IV rank buckets (for distribution & outcome analysis) ─────────────────────
 IV_RANK_BUCKETS = [
