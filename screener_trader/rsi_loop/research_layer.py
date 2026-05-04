@@ -356,13 +356,13 @@ Focus on companies where the stock is pricing in excessive pessimism relative to
         return str(e), "error"
 
 
-def _fallback_analysis(candidates):
-    """Stdlib-only fallback when Claude API is unavailable."""
+def _fallback_analysis(candidates, source="error"):
+    """Mechanical fallback when Gemini API is unavailable or not configured."""
     if not candidates:
         return "No oversold candidates found in watchlist scan. Market breadth strong — no mean-reversion setups available."
 
     lines = [
-        f"Top {min(3, len(candidates))} oversold candidates (add anthropic_api_key to alpaca_config.json for full research analysis):",
+        f"Top {min(3, len(candidates))} oversold candidates (mechanical screen — Gemini qualitative filter unavailable):",
         "",
     ]
     for c in candidates[:3]:
@@ -371,12 +371,16 @@ def _fallback_analysis(candidates):
         vol_str = f", vol {c['vol_ratio']:.1f}x" if c["vol_ratio"] is not None else ""
         lines.append(f"  {c['symbol']}: RSI {c['rsi']}, ${c['price']} {ma_str}{bb_str}{vol_str}")
 
-    lines += [
-        "",
-        "To enable Gemini-powered research picks:",
-        '  Add "gemini_api_key": "AIza..." to alpaca_config.json',
-        '  Or set GEMINI_API_KEY environment variable',
-    ]
+    lines.append("")
+    if source == "no_api_key":
+        lines += [
+            "To enable Gemini-powered research picks:",
+            '  Add "gemini_api_key": "AIza..." to alpaca_config.json',
+            '  Or set GEMINI_API_KEY environment variable',
+        ]
+    else:
+        lines.append("Gemini API temporarily unavailable (high demand / transient error) — will retry next run.")
+
     return "\n".join(lines)
 
 
@@ -428,7 +432,7 @@ def run(regime="unknown"):
         print(f"  [research_layer] Gemini research analysis complete.")
     else:
         print(f"  [research_layer] Gemini unavailable ({source}) — using fallback.")
-        analysis = _fallback_analysis(candidates)
+        analysis = _fallback_analysis(candidates, source=source)
         source   = "fallback"
 
     # ── Save results ───────────────────────────────────────────────────────────
