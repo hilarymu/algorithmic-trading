@@ -1,6 +1,7 @@
 @echo off
 setlocal
 set PYTHONIOENCODING=utf-8
+set PYTHONUNBUFFERED=1
 
 :: Project root is one level up from this scripts/ directory
 pushd "%~dp0.."

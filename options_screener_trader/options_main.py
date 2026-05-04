@@ -57,7 +57,7 @@ MARKET_CLOSE_ET       = (16, 0)
 
 def _log(msg):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts}] {msg}")
+    print(f"[{ts}] {msg}", flush=True)
 
 
 # -- First-run backfill check --------------------------------------------------
