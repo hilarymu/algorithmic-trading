@@ -132,6 +132,48 @@ def _call_strike_for_delta(S: float, iv: float, T: float,
 
 
 # ==============================================================================
+#  BSM option pricing (used for synthetic leg estimates when Alpaca is dark)
+# ==============================================================================
+
+def _bsm_d1(S: float, K: float, T: float, r: float, sigma: float) -> float:
+    return (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+
+
+def _bsm_put_price(S: float, K: float, T: float, r: float, sigma: float) -> float:
+    """Black-Scholes theoretical put price."""
+    if T <= 0 or sigma <= 0:
+        return max(0.0, K - S)
+    d1 = _bsm_d1(S, K, T, r, sigma)
+    d2 = d1 - sigma * math.sqrt(T)
+    return K * math.exp(-r * T) * _norm_cdf(-d2) - S * _norm_cdf(-d1)
+
+
+def _bsm_put_delta(S: float, K: float, T: float, r: float, sigma: float) -> float:
+    """Black-Scholes put delta (negative value, e.g. -0.30)."""
+    if T <= 0 or sigma <= 0:
+        return -1.0 if K > S else 0.0
+    d1 = _bsm_d1(S, K, T, r, sigma)
+    return _norm_cdf(d1) - 1.0
+
+
+def _bsm_call_price(S: float, K: float, T: float, r: float, sigma: float) -> float:
+    """Black-Scholes theoretical call price."""
+    if T <= 0 or sigma <= 0:
+        return max(0.0, S - K)
+    d1 = _bsm_d1(S, K, T, r, sigma)
+    d2 = d1 - sigma * math.sqrt(T)
+    return S * _norm_cdf(d1) - K * math.exp(-r * T) * _norm_cdf(d2)
+
+
+def _bsm_call_delta(S: float, K: float, T: float, r: float, sigma: float) -> float:
+    """Black-Scholes call delta (positive value, e.g. 0.50)."""
+    if T <= 0 or sigma <= 0:
+        return 1.0 if S > K else 0.0
+    d1 = _bsm_d1(S, K, T, r, sigma)
+    return _norm_cdf(d1)
+
+
+# ==============================================================================
 #  Contract symbol utilities
 # ==============================================================================
 
@@ -235,6 +277,71 @@ def save_pending_entries(entries: list) -> None:
 
 
 # ==============================================================================
+#  BSM synthetic leg (fallback when Alpaca options feed returns no data)
+# ==============================================================================
+
+def _bsm_synthetic_leg(
+    symbol:           str,
+    expiry:           date,
+    opt_type:         str,
+    target_delta_abs: float,
+    target_K:         float,
+    price:            float,
+    iv:               float,
+    T:                float,
+    dte:              int,
+) -> dict | None:
+    """
+    Build a synthetic leg dict using Black-Scholes when Alpaca returns no
+    options contract data (consistent behaviour on paper accounts).
+
+    All values are theoretical estimates.  The entry is flagged
+    data_source='bsm_estimated' so the executor and monitor know to treat
+    quotes as indicative, not live fills.
+    """
+    inc    = _standard_increment(price)
+    strike = round(round(target_K / inc) * inc, 2)
+    if strike <= 0:
+        return None
+
+    r = RISK_FREE_RATE
+    if opt_type == "P":
+        mid   = _bsm_put_price(price, strike, T, r, iv)
+        delta = _bsm_put_delta(price, strike, T, r, iv)
+    else:
+        mid   = _bsm_call_price(price, strike, T, r, iv)
+        delta = _bsm_call_delta(price, strike, T, r, iv)
+
+    if mid < 0.05:
+        return None   # theoretically too cheap — skip
+
+    # Synthetic bid/ask: assume 15% half-spread (conservative for illiquid paper)
+    half = mid * 0.075
+    bid  = round(max(0.01, mid - half), 2)
+    ask  = round(mid + half, 2)
+    mid  = round(mid, 4)
+
+    contract = _occ_symbol(symbol, expiry, opt_type, strike)
+    print(f"      BSM estimate: {contract}  delta={delta:.2f}  mid=${mid:.2f}  (Alpaca feed dark)")
+
+    return {
+        "contract":      contract,
+        "strike":        strike,
+        "expiry":        expiry.strftime("%Y-%m-%d"),
+        "dte":           dte,
+        "opt_type":      opt_type,
+        "delta":         round(delta, 4),
+        "bid":           bid,
+        "ask":           ask,
+        "mid":           mid,
+        "open_interest": None,
+        "spread_pct":    round((ask - bid) / mid, 4) if mid > 0 else None,
+        "iv":            round(iv, 4),
+        "data_source":   "bsm_estimated",
+    }
+
+
+# ==============================================================================
 #  Core: pick one option leg
 # ==============================================================================
 
@@ -273,7 +380,13 @@ def _pick_leg(
     # Fetch snapshots for all candidates
     snaps = fetch_option_snapshots(candidates)
     if not snaps:
-        return None
+        # Alpaca options feed returned nothing (common on paper accounts).
+        # Fall back to Black-Scholes synthetic estimates so the pipeline
+        # can produce a pending entry for the executor to attempt.
+        return _bsm_synthetic_leg(
+            symbol, expiry, opt_type, target_delta_abs,
+            target_K, price, iv, T, dte,
+        )
 
     best      = None
     best_diff = float("inf")
@@ -435,6 +548,10 @@ def select_contract(candidate: dict, config: dict) -> dict | None:
     pid = _position_id(symbol, strategy, short_leg["expiry"] if short_leg
                        else long_leg["expiry"], strike_for_id)
 
+    # Determine contract data source (live Alpaca vs BSM estimate)
+    _src_leg = short_leg or long_leg
+    contract_source = _src_leg.get("data_source", "alpaca_live") if _src_leg else "unknown"
+
     entry = {
         "id":              pid,
         "symbol":          symbol,
@@ -453,6 +570,7 @@ def select_contract(candidate: dict, config: dict) -> dict | None:
         "net_credit_est":  round(net_credit, 4),
         "capital_at_risk": round(capital_risk, 2),
         "near_earnings":   candidate.get("near_earnings", False),
+        "contract_source": contract_source,
         "status":          "pending_review",
         "created_at":      datetime.now(timezone.utc).isoformat(),
     }
