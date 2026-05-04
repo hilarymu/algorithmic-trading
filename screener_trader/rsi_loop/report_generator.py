@@ -364,17 +364,30 @@ def run():
 
     api_key = get_api_key()
     if api_key:
-        try:
-            user_prompt = build_user_prompt(context)
-            report_text = call_llm(api_key, user_prompt)
-            source = "gemini_api"
-            print("  [report_generator] Report generated via Gemini API.")
-        except ImportError:
-            fallback_reason = "google_genai_not_installed"
-            print("  [report_generator] google-genai package not available — using fallback.")
-        except Exception as e:
-            fallback_reason = f"api_error: {str(e)[:100]}"
-            print(f"  [report_generator] Gemini API error: {e} — using fallback.")
+        max_attempts = 3
+        retry_delay  = 45   # seconds between attempts
+        user_prompt  = build_user_prompt(context)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                report_text = call_llm(api_key, user_prompt)
+                source = "gemini_api"
+                if attempt > 1:
+                    print(f"  [report_generator] Gemini succeeded on attempt {attempt}.")
+                else:
+                    print("  [report_generator] Report generated via Gemini API.")
+                break
+            except ImportError:
+                fallback_reason = "google_genai_not_installed"
+                print("  [report_generator] google-genai package not available — using fallback.")
+                break
+            except Exception as e:
+                if attempt < max_attempts:
+                    print(f"  [report_generator] Gemini attempt {attempt} failed ({str(e)[:80]}) — retrying in {retry_delay}s...")
+                    import time as _time
+                    _time.sleep(retry_delay)
+                else:
+                    fallback_reason = f"api_error: {str(e)[:100]}"
+                    print(f"  [report_generator] Gemini API error: {e} — using fallback.")
     else:
         fallback_reason = "no_api_key"
         print("  [report_generator] No Gemini API key found — using fallback report.")

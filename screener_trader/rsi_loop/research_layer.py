@@ -340,20 +340,31 @@ Identify the TOP 3 mean-reversion candidates. For each provide:
 
 Focus on companies where the stock is pricing in excessive pessimism relative to business fundamentals. Be specific about what you know of these companies. Do not pick all three from the same sector."""
 
-    try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model    = "gemini-2.5-flash",
-            contents = user_msg,
-            config   = genai_types.GenerateContentConfig(
-                system_instruction = SYSTEM_PROMPT,
-                max_output_tokens  = 8192,
-                temperature        = 0.3,
-            ),
-        )
-        return response.text, "gemini_api"
-    except Exception as e:
-        return str(e), "error"
+    max_attempts = 3
+    retry_delay  = 45   # seconds between attempts (503 spikes are usually brief)
+    last_err     = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model    = "gemini-2.5-flash",
+                contents = user_msg,
+                config   = genai_types.GenerateContentConfig(
+                    system_instruction = SYSTEM_PROMPT,
+                    max_output_tokens  = 8192,
+                    temperature        = 0.3,
+                ),
+            )
+            if attempt > 1:
+                print(f"  [research_layer] Gemini succeeded on attempt {attempt}.")
+            return response.text, "gemini_api"
+        except Exception as e:
+            last_err = e
+            if attempt < max_attempts:
+                print(f"  [research_layer] Gemini attempt {attempt} failed ({e}) — retrying in {retry_delay}s...")
+                import time as _time
+                _time.sleep(retry_delay)
+    return str(last_err), "error"
 
 
 def _fallback_analysis(candidates, source="error"):
