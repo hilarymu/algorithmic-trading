@@ -183,7 +183,7 @@ def fetch_bars_bulk(symbols: list[str], start: str, end: str) -> dict[str, list]
             "timeframe":  "1Day",
             "start":      start,
             "end":        end,
-            "limit":      400,
+            "limit":      10000,   # total across all symbols in batch; 30 syms × 252 bars ≈ 7560
             "feed":       "iex",
             "adjustment": "all",
         }

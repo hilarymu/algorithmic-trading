@@ -4,7 +4,7 @@
   "rescreen_day": "Monday",
   "indicators": {
     "rsi_period": 14,
-    "rsi_oversold": 20,
+    "rsi_oversold": 25,
     "bb_period": 20,
     "bb_std": 2.0,
     "ma_trend_period": 200,
@@ -12,14 +12,14 @@
   },
   "filters": {
     "require_above_200ma": false,
-    "require_below_lower_bb": true,
+    "require_below_lower_bb": false,
     "require_rsi_oversold": true,
     "require_volume_confirmation": true
   },
   "scoring": {
-    "rsi_weight": 0.41,
-    "bb_distance_weight": 0.33,
-    "volume_weight": 0.26
+    "rsi_weight": 0.4,
+    "bb_distance_weight": 0.35,
+    "volume_weight": 0.25
   },
   "min_price": 10.0,
   "min_avg_volume": 500000,
