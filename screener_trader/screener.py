@@ -428,8 +428,9 @@ def run_screener() -> list[dict]:
         The top MAX_POSITIONS actionable picks (also written to screener_results.json).
     """
     now   = datetime.now(timezone.utc)
-    end   = now.strftime("%Y-%m-%d")
-    start = (now - timedelta(days=365)).strftime("%Y-%m-%d")
+    # Use yesterday as end date to avoid partial intraday bars skewing volume ratios
+    end   = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    start = (now - timedelta(days=366)).strftime("%Y-%m-%d")
 
     print("\n=== Stock Screener - Mean Reversion / S&P 500 ===")
     print(f"Run time : {now.strftime('%Y-%m-%d %H:%M UTC')}")
