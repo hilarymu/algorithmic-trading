@@ -1,17 +1,21 @@
 # Daily Health Check
 
-After the 16:30 ET run completes, spend 2 minutes verifying these items.
+Two runs happen each day. Both should be checked.
+
+- **15:30 ET pre-close** (`\Trading-Options-Preclose`): IV + screener + selector + executor
+- **16:30 ET post-close** (`\Trading-Options-Daily`): monitor + EOD analysis
+
 Total check time: ~2 minutes once familiar with the output.
 
 ---
 
-## 1. Did the run complete without errors?
+## 1. Did both runs complete without errors?
 
-**Check:** Windows Task Scheduler → `\Trading-Options-Daily` → Last Run Result = `0x0`
+**Pre-close:** Task Scheduler → `\Trading-Options-Preclose` → Last Run Result = `0x0`
+Log: `options_preclose_YYYYMMDD.log` — final line: `options_main pre-close done in X.Xs`
 
-Or check the console / log output for the final line:
-```
-[timestamp] options_main done in X.Xs
+**Post-close:** Task Scheduler → `\Trading-Options-Daily` → Last Run Result = `0x0`
+Log: `options_loop_YYYYMMDD.log` — final line: `options_main done in X.Xs`
 ```
 
 If any step errored, you'll see a line like:
@@ -60,7 +64,7 @@ Check the `exit_reason`:
 
 ## 4. Were new positions entered?
 
-**Check:** `executor done: N executed, K skipped`
+**Check the pre-close log (15:30 ET):** `executor done: N executed, K skipped`
 
 If N > 0: new paper orders were placed. Review `positions_state.json` → `"open"` array.
 

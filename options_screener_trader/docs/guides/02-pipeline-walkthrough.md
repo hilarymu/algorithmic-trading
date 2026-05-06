@@ -1,28 +1,33 @@
 # Pipeline Walkthrough — Daily Run Step by Step
 
-Every trading day at **16:30 ET**, the Windows Task Scheduler fires `run_options_loop.bat`,
-which runs `options_main.py`. This document walks through every step, what it does,
-what files it reads and writes, and what can go wrong.
+Two Task Scheduler tasks run every trading day:
 
-A second task, `\Trading-Options-Intraday`, fires at **09:30 ET Mon–Fri** and runs
-`run_options_monitor_intraday.bat` for continuous intraday monitoring.
+| Task | Time | Script | What runs |
+|---|---|---|---|
+| `\Trading-Options-Preclose` | **15:30 ET** | `run_options_preclose.bat` | Steps 0–2, 4–5 (IV + screen + select + execute) |
+| `\Trading-Options-Daily` | **16:30 ET** | `run_options_loop.bat` | Steps 3, 6–7 (monitor + EOD analysis) |
+| `\Trading-Options-Intraday` | **09:30 ET** | `run_options_monitor_intraday.bat` | Intraday exit monitor (every 15 min) |
+
+The executor runs at **15:30 ET** (pre-close) so orders reach the exchange while
+the market is still open. The 16:30 post-close run is analysis only — no orders.
 
 ---
 
 ## At a glance
 
 ```
-Step 0  iv_backfill        (first run only — bootstrap IV history)
-Step 1  iv_tracker         16:30 ET daily — snapshot today's IV
-Step 2  options_screener   filter universe → candidates
-Step 3  options_monitor    daily close — check exits on open positions
-Step 4  options_strategy_selector  pick contracts for new entries
-Step 5  options_executor   place / skip paper orders
-Step 6  options_signal_analyzer  score candidates, analyse outcomes
-Step 7  options_optimizer  generate insights, adjust config (when n≥50)
+Step 0  iv_backfill              (first run only — bootstrap IV history)
+Step 1  iv_tracker               15:30 ET — snapshot today's IV
+Step 2  options_screener         15:30 ET — filter universe → candidates
+Step 4  options_strategy_selector 15:30 ET — look up real contracts, BSM-price them
+Step 5  options_executor         15:30 ET — place orders while market is open (~15:33 ET)
+──────────────────────────────────────────────────────────────────────────────────────
+Step 3  options_monitor          16:30 ET — daily close check, EOD exits
+Step 6  options_signal_analyzer  16:30 ET — score candidates, analyse outcomes
+Step 7  options_optimizer        16:30 ET — generate insights, adjust config (n≥50)
 ```
 
-Total runtime: ~6–45 seconds depending on universe size.
+Total runtime: pre-close ~35–50 s, post-close ~10–20 s.
 
 ---
 
@@ -127,27 +132,33 @@ instead of waiting until 16:30 ET.
 
 ## Step 4 — Strategy Selector `options_strategy_selector.py`
 
-**When:** Every daily run, after monitor exits, before executor.
+**When:** Pre-close run (15:30 ET), after screener, before executor.
 
 **What it does:**
 1. Reads `options_candidates.json` from the screener.
-2. For each candidate:
-   - Targets an expiry in the 21–50 DTE window (fallback extends to 65 DTE on calendar gaps).
-   - Uses **Black-Scholes** to find the option strike that matches the target delta (0.30 for CSP).
-   - Constructs the option contract symbol (OCC standard: `TSCO250620P00195000`).
-   - Fetches a live quote for that contract from Alpaca.
-   - Validates: open interest ≥ 500, bid-ask spread ≤ 15% of mid.
-3. If valid: adds to `options_pending_entries.json` with full contract details.
-4. Position sizing: max 7% of paper NAV per position, 1 contract initially.
+2. For each candidate (typically 2–5 symbols):
+   - Targets an expiry in the 21–50 DTE window.
+   - Uses **Black-Scholes** to estimate the strike that gives the target delta (0.30 for CSP).
+   - Calls `GET /v2/options/contracts` on the **Alpaca trading API** to find real listed
+     contracts near that estimated strike — guaranteeing the OCC symbol actually exists.
+   - Tries to fetch a live quote from the snapshot API; uses **BSM pricing** as fallback
+     when the indicative feed returns no data (common on paper accounts).
+   - Picks the listed contract whose BSM delta is closest to target.
+3. If valid contract found: adds to `options_pending_entries.json`.
+4. Position sizing: max 7% of paper NAV per position, 1 contract.
 
-**Reads:** `options_candidates.json`, `options_config.json`, Alpaca options snapshot API
+**Contract source field:** each leg is tagged `data_source: "alpaca_live"` or
+`data_source: "bsm_estimated"` so the executor and monitor know whether quotes are live.
+
+**Reads:** `options_candidates.json`, `options_config.json`, Alpaca trading + data APIs
 **Writes:** `options_pending_entries.json`
 
 ---
 
 ## Step 5 — Executor `options_executor.py`
 
-**When:** Every daily run.
+**When:** Pre-close run (15:30 ET), immediately after the selector (~15:33 ET).
+Orders are placed while the market is still open so fills can occur before 16:00 ET close.
 
 **What it does:**
 1. Reads `options_pending_entries.json`.
@@ -158,13 +169,16 @@ instead of waiting until 16:30 ET.
 3. For each pending entry that passes gates:
    - Submits a **limit order** to sell the put (or buy the spread) via Alpaca paper API.
    - Records the order in `positions_state.json` with entry time, premium, strike, expiry.
-4. Clears processed entries from `options_pending_entries.json`.
+4. Updates processed entries in `options_pending_entries.json`.
 
 **Reads:** `options_pending_entries.json`, `positions_state.json`, `options_config.json`
 **Writes:** `positions_state.json` (new open positions), Alpaca orders API
 
 **Safety:** The executor is the only module that touches the Alpaca orders endpoint.
 All other modules are read-only with respect to live trading.
+
+**Note:** The post-close run (16:30 ET) skips the executor — the options market closes
+at 16:00 ET, so order placement after that point cannot result in fills.
 
 ---
 

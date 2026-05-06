@@ -88,7 +88,39 @@ Once signed, `iv_backfill.py` will use real options data instead of the HV30 pro
 
 ---
 
-### 4. Account information
+### 4. Options contract listing
+**Endpoint:** `GET /v2/options/contracts`
+**Trading URL:** `https://paper-api.alpaca.markets`
+**Used by:** `options_strategy_selector.py`
+
+**Purpose:** Find real, actively-listed option contracts near the target strike and expiry
+before placing an order. Ensures the OCC symbol used in the order actually exists in
+Alpaca's system — preventing 422 "asset not found" errors.
+
+**Key parameters:**
+```
+underlying_symbols=TSCO
+type=put
+expiration_date_gte=2026-06-19
+expiration_date_lte=2026-06-19
+status=active
+strike_price_gte=28.00
+strike_price_lte=38.00
+limit=25
+```
+
+**Response:** `{ "option_contracts": [ { "symbol": "TSCO260619P00030000", "strike_price": "30", ... } ] }`
+
+**Works on paper accounts:** Yes. This is a trading-API endpoint (not data/OPRA) and
+requires no special agreement beyond standard paper account credentials.
+
+**Why used here but not in iv_tracker:** The strategy selector processes 2–5 candidates
+per run; the per-ticker overhead is negligible. `iv_tracker.py` processes 500+ symbols
+and uses direct OCC symbol construction (ADR-002) for efficiency.
+
+---
+
+### 5. Account information
 **Endpoint:** `GET /v2/account`
 **Trading URL:** `https://paper-api.alpaca.markets`
 **Used by:** `options_executor.py`, `options_strategy_selector.py`
@@ -99,7 +131,7 @@ Once signed, `iv_backfill.py` will use real options data instead of the HV30 pro
 
 ---
 
-### 5. Options orders (place, modify, cancel)
+### 6. Options orders (place, modify, cancel)
 **Endpoint:** `POST /v2/orders`
 **Trading URL:** `https://paper-api.alpaca.markets`
 **Used by:** `options_executor.py` (submit entries), `options_monitor.py` (submit exits)
@@ -138,7 +170,7 @@ All other modules are read-only with respect to live trading state.
 
 ---
 
-### 6. Options positions
+### 7. Options positions
 **Endpoint:** `GET /v2/positions`
 **Trading URL:** `https://paper-api.alpaca.markets`
 **Used by:** `options_monitor.py`, `options_executor.py`

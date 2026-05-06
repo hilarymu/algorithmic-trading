@@ -1,90 +1,104 @@
 # 6. Runtime View
 
-## 6.1 Daily Pipeline — Phase 1 (Current)
+## 6.1 Pre-close run (15:30 ET) — IV + screening + order placement
 
-Triggered by Windows Task Scheduler at **16:30 ET** (after market close).
+Triggered by Task Scheduler at **15:30 ET** while the market is still open.
+`run_options_preclose.bat` → `options_main.py --pre-close`
 
 ```mermaid
 sequenceDiagram
-    participant Scheduler as Task Scheduler
+    participant TS as Task Scheduler
     participant Main as options_main.py
-    participant BF as iv_backfill.py
     participant IV as iv_tracker.py
     participant SC as options_screener.py
-    participant Wiki as Wikipedia
+    participant SEL as options_strategy_selector.py
+    participant EX as options_executor.py
     participant AlpacaData as Alpaca Data API
+    participant AlpacaTrade as Alpaca Trading API
     participant Files as JSON data files
 
-    Scheduler->>Main: daily trigger (16:30 ET)
-
-    alt First run (iv_history.json absent or tiny)
-        Main->>BF: run()
-        BF->>AlpacaData: GET /v2/stocks/bars (270 cal days, all universe)
-        BF->>AlpacaData: GET /v1beta1/options/bars (35 contracts/batch)
-        BF->>BF: Black-Scholes IV inversion per (symbol, date)
-        BF->>Files: write iv_history.json (~252 readings per symbol)
-    end
+    TS->>Main: fire run_options_preclose.bat (15:30 ET)
 
     Main->>IV: run()
-    IV->>Wiki: GET SP500 + NASDAQ100 component lists
-    IV->>AlpacaData: GET /v2/stocks/trades/latest (batch, 500+ tickers)
-    AlpacaData-->>IV: latest prices
-    IV->>IV: construct ATM contract symbols (no API call)
-    IV->>AlpacaData: GET /v1beta1/options/snapshots (batches of ~40)
-    AlpacaData-->>IV: impliedVolatility per contract
-    IV->>IV: select ATM IV per ticker
-    IV->>Files: append iv_history.json
-    IV->>IV: compute IV Rank (rolling 252-day)
-    IV->>Files: write iv_rank_cache.json
-    IV-->>Main: {iv_fetched: 510, with_iv_rank: N}
+    IV->>AlpacaData: GET /v1beta1/options/snapshots (500+ symbols, direct OCC construction)
+    AlpacaData-->>IV: indicative IV (or empty — HV30 proxy used as fallback)
+    IV->>Files: append iv_history.json, write iv_rank_cache.json
 
     Main->>SC: run()
-    SC->>SC: read iv_rank_cache + detect regime
-    SC->>AlpacaData: GET /v2/stocks/bars (RSI + volume, eligible symbols)
+    SC->>AlpacaData: GET /v2/stocks/bars (RSI + volume for eligible symbols)
     AlpacaData-->>SC: daily bars
-    SC->>SC: Wilder RSI(14) + volume ratio per symbol
-    SC->>SC: apply strategy matrix (regime x IV rank x RSI)
+    SC->>SC: apply filters (RSI, IV rank, volume, regime)
     SC->>Files: write options_candidates.json
-    SC->>Files: append options_picks_history.json (research_mode=true)
-    SC-->>Main: {candidates: N, regime: ..., picks_added: M}
 
-    Main->>Main: log completion
+    Main->>SEL: run()
+    SEL->>Files: read options_candidates.json
+    loop each candidate (2–5 symbols)
+        SEL->>AlpacaTrade: GET /v2/options/contracts (find real listed strikes)
+        AlpacaTrade-->>SEL: listed contract symbols near target strike
+        SEL->>AlpacaData: GET /v1beta1/options/snapshots (live quote attempt)
+        AlpacaData-->>SEL: quote (or empty — BSM pricing used as fallback)
+        SEL->>SEL: pick best delta match, build leg dict
+    end
+    SEL->>Files: write options_pending_entries.json
+
+    Main->>EX: run()
+    EX->>AlpacaTrade: POST /v2/orders (sell-to-open, market still open ~15:33 ET)
+    AlpacaTrade-->>EX: order confirmation
+    EX->>Files: append positions_state.json (new open positions)
+
+    Main->>Main: log completion (~15:33 ET)
 ```
 
-**Runtime characteristics (Phase 1):**
-- iv_tracker duration: ~10-12 seconds for 529 universe tickers
-- options_screener duration: ~15-20 seconds (RSI bar fetch for eligible symbols)
-- iv_backfill (first run only): ~30-60 seconds (~184 API calls)
-- No orders placed
+**Runtime characteristics (pre-close):**
+- iv_tracker: ~10–12 seconds (500+ symbols)
+- options_screener: ~15–20 seconds (RSI bar fetch)
+- strategy_selector: ~5 seconds (2–5 candidates × contract lookup + BSM)
+- executor: ~2 seconds (limit orders placed while market open)
+- Total: ~35–50 seconds; finishes well before 16:00 ET market close
 
-## 6.2 Daily Pipeline — Phase 2 (Planned)
+## 6.2 Post-close run (16:30 ET) — EOD monitoring and analysis
+
+Triggered by Task Scheduler at **16:30 ET** after market close.
+`run_options_loop.bat` → `options_main.py --post-close`
+
+No orders are placed in this run (market closed). IV tracker, screener, selector,
+and executor are all skipped (already ran at 15:30).
 
 ```mermaid
 sequenceDiagram
+    participant TS as Task Scheduler
     participant Main as options_main.py
-    participant Screen as options_screener.py
-    participant Selector as options_strategy_selector.py
-    participant Executor as options_executor.py
-    participant Monitor as options_monitor.py
-    participant Alpaca as Alpaca Paper API
+    participant MON as options_monitor.py
+    participant AN as options_signal_analyzer.py
+    participant OPT as options_optimizer.py
+    participant AlpacaTrade as Alpaca Trading API
+    participant Files as JSON data files
 
-    Main->>Monitor: run() — check exits first
-    Monitor->>Alpaca: GET /v2/positions
-    Monitor->>Monitor: check 50% profit / 21 DTE / RSI / loss limit
-    Monitor->>Alpaca: POST /v2/orders (buy to close where triggered)
-    Monitor-->>Main: exit actions taken
+    TS->>Main: fire run_options_loop.bat (16:30 ET)
+    Note over Main: IV + screener + selector + executor skipped (ran at 15:30)
 
-    Main->>Screen: run()
-    Screen->>Screen: apply RSI + IV Rank filter
-    Screen-->>Main: candidate list
+    Main->>MON: run() — daily close check
+    MON->>Files: read positions_state.json
+    loop each open position
+        MON->>AlpacaTrade: GET /v1beta1/options/snapshots (EOD quote)
+        MON->>MON: check profit target / loss limit / DTE / RSI recovery
+        opt exit condition met
+            MON->>AlpacaTrade: POST /v2/orders (buy-to-close)
+            MON->>Files: update positions_state.json
+        end
+    end
 
-    Main->>Selector: run(candidates)
-    Selector->>Selector: apply regime × IV matrix
-    Selector-->>Main: pending_entries list
+    Main->>AN: run_analyzer()
+    AN->>Files: read options_candidates.json, iv_rank_cache.json, positions_state.json
+    AN->>AN: score candidates, compute outcome stats
+    AN->>Files: write options_signal_quality.json
 
-    Main->>Executor: run(pending_entries)
-    Executor->>Alpaca: POST /v2/orders (CSP / spread)
-    Executor-->>Main: orders placed
+    Main->>OPT: run_optimizer()
+    OPT->>Files: read options_signal_quality.json, options_config.json
+    OPT->>OPT: generate insights (auto-apply when n_closed >= 50)
+    OPT->>Files: write options_improvement_report.json
+
+    Main->>Main: log completion
 ```
 
 ## 6.3 Error Handling at Runtime

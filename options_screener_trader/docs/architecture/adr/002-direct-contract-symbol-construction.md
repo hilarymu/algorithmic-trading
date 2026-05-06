@@ -68,3 +68,21 @@ completes in ~10 seconds vs 5+ minutes for the contracts API approach.
 - ✅ Target expirations computed from monthly options cycle (3rd Friday nearest 35 DTE)
 - ⚠️ Non-standard strikes (e.g. adjusted for splits or special dividends) will miss the snapshot — ticker skipped gracefully
 - ⚠️ If Alpaca changes the OCC contract naming convention, symbol construction breaks
+
+---
+
+## Scope clarification (updated 2026-05-06)
+
+This decision applies **only to `iv_tracker.py`** (daily IV rank computation across 500+ symbols).
+
+`options_strategy_selector.py` uses a different approach for order execution: it calls
+`GET /v2/options/contracts` on the **trading API** to find real listed contracts near the
+target strike, then prices them with BSM. This is correct for execution because:
+
+1. Only 2–5 candidates per run — the per-ticker API overhead is negligible.
+2. Ordering a constructed symbol that isn't actually listed causes a 422 "asset not found"
+   error. The contracts API guarantees the symbol exists before an order is attempted.
+3. The indicative snapshot feed returning no data (common on paper accounts) does not
+   prevent contract discovery via the trading API — they are separate endpoints.
+
+In summary: **construct symbols for IV data fetching; look up real symbols for order execution.**
