@@ -18,7 +18,7 @@ Three independent, fully-automated paper trading strategies built on the [Alpaca
 | System | Strategy | Schedule | Dashboard |
 |--------|----------|----------|-----------|
 | [Screener Trader](#1-screener-trader) | S&P 500 mean-reversion (RSI + Bollinger Bands) | Weekly screener · Daily monitor | `localhost:8766` |
-| [Options Screener Trader](#2-options-screener-trader) | Cash-secured puts on high-IV oversold stocks | Daily post-close pipeline | `localhost:8767` |
+| [Options Screener Trader](#2-options-screener-trader) | CSP / put spreads / call spreads on high-IV oversold stocks | Pre-close 15:30 ET · Post-close 16:30 ET · Intraday 15-min | `localhost:8767` |
 | [Politician Copy Trader](#3-politician-copy-trader) | Mirror congressional stock disclosures | Daily Capitol Trades poll | `localhost:8765` |
 
 ---
@@ -51,19 +51,26 @@ Mon–Fri    monitor.py           → RSI exit · trailing stop · hard stop · 
 
 ## 2. Options Screener Trader
 
-**Strategy:** Sell cash-secured puts when a stock is oversold (RSI < 25) *and* options are expensive (IV rank ≥ 40). High IV means fat premiums; mean-reversion in the underlying means the stock is unlikely to keep falling.
+**Strategy:** Sell premium when a stock is oversold (RSI < 25) *and* options are expensive (IV rank ≥ 40). High IV means fat premiums; mean-reversion in the underlying means the stock is unlikely to keep falling. Strategy type — cash-secured put, bull put spread, or bull call debit spread — is selected per-candidate based on IV level and regime.
 
 **What makes it interesting:**
-- **Self-computed IV rank** — calculates 252-day IV rank locally from Alpaca bar data (no options data subscription required).
-- **Black-Scholes strike selection** — targets delta ~0.20 strikes using BSM pricing to pick the right expiry/strike combination.
-- **Regime-aware strategy selection** — uses the same regime classifier as the equity screener to switch between aggressive/conservative parameters.
-- **Zero runtime dependencies** — pure Python standard library; no pip packages required to run.
+- **Self-computed IV rank** — calculates 252-day IV rank locally from Alpaca bar data; no OPRA subscription required.
+- **Black-Scholes strike selection** — targets delta ~0.30 strikes using BSM analytical inversion; contract symbols verified against Alpaca's `/v2/options/contracts` listing API before order placement.
+- **Two-phase daily schedule** — screener + selector + executor run at 15:30 ET (pre-close, while options market is open); monitor + EOD analysis + self-optimizer run at 16:30 ET (post-close).
+- **Self-optimizing loop** — after 10+ closed trades, a Phase 3 optimizer analyses win rate, premium decay, and regime performance; auto-applies parameter changes after 50+ closed trades.
+- **Simulated execution** — Alpaca paper accounts only list 0-1 DTE contracts for liquid ETFs, so monthly individual-stock positions fill as BSM-priced simulated trades tracked internally with full P&L accounting.
+- **Regime-aware strategy selection** — uses the same regime classifier as the equity screener; CSP entries blocked in bear regime.
+- **Zero runtime dependencies** — pure Python standard library; no pip packages required.
 
-**Daily pipeline (post-close):**
+**Two-phase daily pipeline:**
 ```
-16:30 ET  iv_tracker → options_screener → options_selector → options_executor
-          signal_analyzer → optimizer → dashboard regeneration
-09:30 ET  options_monitor  → intraday loss-limit checks (every 15 min)
+15:30 ET  iv_tracker → options_screener → strategy_selector → options_executor
+          (IV rank update · candidate scan · contract selection · order entry)
+
+16:30 ET  options_monitor → signal_analyzer → optimizer → dashboard
+          (daily close check · EOD scoring · self-improvement loop)
+
+09:30–16:00 ET  options_monitor --intraday   (every 15 min, profit/loss exits only)
 ```
 
 [Full architecture docs →](options_screener_trader/docs/architecture/README.md)
