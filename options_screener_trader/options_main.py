@@ -12,14 +12,15 @@ Two-phase daily schedule
 ------------------------
 15:30 ET  (pre-close, market still open):
     scripts/run_options_preclose.bat  ->  options_main.py --pre-close
-    Runs: iv_tracker + screener + strategy_selector
-    Purpose: fetch live IV snapshots and pick option contracts while
-             Alpaca options data is still streaming.
+    Runs: iv_tracker + screener + strategy_selector + executor
+    Purpose: screen candidates, select real contracts, and place orders
+             while the market is still open for fills (~15:33 ET finish).
 
 16:30 ET  (post-close, EOD):
     scripts/run_options_loop.bat  ->  options_main.py --post-close
-    Runs: monitor + executor + signal_analyzer + optimizer + dashboard
-    Skips: iv_tracker (already ran), screener (already ran), selector (already ran)
+    Runs: monitor + signal_analyzer + optimizer + dashboard
+    Skips: iv_tracker, screener, selector, executor (all ran at 15:30)
+    Note: executor intentionally excluded -- options market closed at 16:00 ET.
 
 Intraday exit monitor:
     scripts/run_options_monitor_intraday.bat  ->  options_main.py --intraday
@@ -155,8 +156,8 @@ def run():
     args           = set(sys.argv[1:])
 
     # Phase flags
-    pre_close      = "--pre-close"  in args   # 15:30 ET: IV + screener + selector
-    post_close     = "--post-close" in args   # 16:30 ET: monitor + executor + EOD steps
+    pre_close      = "--pre-close"  in args   # 15:30 ET: IV + screener + selector + executor
+    post_close     = "--post-close" in args   # 16:30 ET: monitor + EOD analysis (no orders)
 
     # Granular overrides (respected in any mode)
     force_backfill = "--backfill"   in args
@@ -166,13 +167,14 @@ def run():
     skip_iv        = "--no-iv"      in args or post_close
     skip_screener  = post_close                  # screener ran in pre-close
     skip_selector  = post_close                  # selector ran in pre-close
-    skip_eod       = pre_close                   # monitor/executor/analysis ran post-close
+    skip_executor  = post_close                  # executor ran in pre-close (market still open)
+    skip_eod       = pre_close                   # monitor/analysis runs post-close
 
     # Mode label for logging
     if pre_close:
-        mode_label = "pre-close (IV + screener + selector)"
+        mode_label = "pre-close (IV + screener + selector + executor)"
     elif post_close:
-        mode_label = "post-close (monitor + executor + analysis)"
+        mode_label = "post-close (monitor + EOD analysis)"
     else:
         mode_label = "full pipeline"
 
@@ -271,25 +273,29 @@ def run():
     else:
         _log("options_strategy_selector skipped (post-close mode -- ran at 15:30)")
 
+    # -- Step 5: Executor (pre-close, market still open ~15:33 ET) -------------
+    # Runs immediately after the selector so orders reach the exchange before
+    # 16:00 ET close.  Skipped in post-close mode (market already closed).
+    if not skip_executor:
+        _log("Running options_executor...")
+        try:
+            from options_loop.options_executor import run as run_executor
+            result = run_executor()
+            if result:
+                _log(f"  executor done: {result.get('executed', 0)} executed, "
+                     f"{result.get('skipped', 0)} skipped")
+        except Exception as e:
+            _log(f"  executor ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+    else:
+        _log("options_executor skipped (post-close mode -- ran at 15:30)")
+
     # -- Pre-close exit point --------------------------------------------------
     if pre_close:
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()
-        _log(f"options_main pre-close done in {elapsed:.1f}s "
-             f"-- pending entries ready for 16:30 executor")
+        _log(f"options_main pre-close done in {elapsed:.1f}s")
         return
-
-    # -- Step 5: Executor (post-close or full run) -----------------------------
-    _log("Running options_executor...")
-    try:
-        from options_loop.options_executor import run as run_executor
-        result = run_executor()
-        if result:
-            _log(f"  executor done: {result.get('executed', 0)} executed, "
-                 f"{result.get('skipped', 0)} skipped")
-    except Exception as e:
-        _log(f"  executor ERROR: {e}")
-        import traceback
-        traceback.print_exc()
 
     # -- Step 6: Signal analyzer -----------------------------------------------
     _log("Running options_signal_analyzer...")
