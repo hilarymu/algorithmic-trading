@@ -45,7 +45,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent))
 from iv_tracker import (
     _get, _standard_increment, _target_expirations,
-    DATA_BASE, CALL_DELAY,
+    DATA_BASE, TRADING_BASE, CALL_DELAY,
 )
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -249,6 +249,60 @@ def fetch_option_snapshots(contract_symbols: list[str]) -> dict:
 
 
 # ==============================================================================
+#  Alpaca trading-API contract listing (finds real, tradeable OCC symbols)
+# ==============================================================================
+
+def fetch_listed_contracts(
+    symbol:   str,
+    expiry:   date,
+    opt_type: str,      # "P" or "C"
+    target_K: float,
+    price:    float,
+) -> list[dict]:
+    """
+    Query the Alpaca trading API for real listed option contracts near
+    the target strike and expiry.
+
+    Uses TRADING_BASE (/v2/options/contracts) — separate from the market-
+    data snapshot endpoint and works without OPRA.  Returns a list of
+    {symbol, strike, expiry} dicts sorted by proximity to target_K,
+    or an empty list if the API call fails or returns nothing.
+    """
+    inc = _standard_increment(price)
+    lo  = max(0.01, round(target_K - 5 * inc, 2))
+    hi  = round(target_K + 5 * inc, 2)
+    exp = expiry.strftime("%Y-%m-%d")
+
+    url = (
+        f"{TRADING_BASE}/options/contracts"
+        f"?underlying_symbols={symbol}"
+        f"&type={'put' if opt_type == 'P' else 'call'}"
+        f"&expiration_date_gte={exp}&expiration_date_lte={exp}"
+        f"&status=active"
+        f"&strike_price_gte={lo}&strike_price_lte={hi}"
+        f"&limit=25"
+    )
+    data = _get(url)
+    if not data:
+        return []
+
+    contracts = data.get("option_contracts", [])
+    result = []
+    for c in contracts:
+        try:
+            sym    = c["symbol"]
+            strike = float(c["strike_price"])
+            exp_d  = c.get("expiration_date", exp)
+            if sym and strike > 0:
+                result.append({"symbol": sym, "strike": strike, "expiry": exp_d})
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    result.sort(key=lambda c: abs(c["strike"] - target_K))
+    return result
+
+
+# ==============================================================================
 #  Config / cache loaders
 # ==============================================================================
 
@@ -322,7 +376,7 @@ def _bsm_synthetic_leg(
     mid  = round(mid, 4)
 
     contract = _occ_symbol(symbol, expiry, opt_type, strike)
-    print(f"      BSM estimate: {contract}  delta={delta:.2f}  mid=${mid:.2f}  (Alpaca feed dark)")
+    print(f"      BSM synthetic (last resort): {contract}  delta={delta:.2f}  mid=${mid:.2f}  (contract listing unavailable)")
 
     return {
         "contract":      contract,
@@ -357,15 +411,25 @@ def _pick_leg(
     """
     Find the best-matching contract leg for the given parameters.
 
-    Returns a dict with contract details, or None if no liquid contract found.
+    Path A — Alpaca contract listing API returns real listed symbols:
+        1. Try live snapshot data (greeks + quotes).
+        2. If snapshots empty (normal on paper), BSM-price the real contracts
+           and pick closest delta.  Orders will succeed — real OCC symbols.
+
+    Path B — contract listing API unavailable (network / auth error):
+        BSM synthetic: constructs a theoretical OCC symbol and prices it.
+        Orders will likely 422 (symbol may not be listed) but the pipeline
+        still produces an actionable entry for review.
+
+    Returns a leg dict, or None if no suitable contract found.
     """
-    filt = config.get("filters", {})
-    min_oi      = filt.get("min_open_interest", 500)
-    max_spread  = filt.get("max_bid_ask_spread_pct", 0.15)
-    cs          = config.get("contract_selection", {})
+    filt       = config.get("filters", {})
+    min_oi     = filt.get("min_open_interest", 500)
+    max_spread = filt.get("max_bid_ask_spread_pct", 0.15)
 
     dte = (expiry - date.today()).days
     T   = dte / 365.0
+    r   = RISK_FREE_RATE
 
     # Estimate target strike via BSM
     if opt_type == "P":
@@ -373,78 +437,122 @@ def _pick_leg(
     else:
         target_K = _call_strike_for_delta(price, iv, T, target_delta_abs)
 
-    # Build candidate symbols (5 strikes centred on estimate)
-    strikes    = _candidate_strikes(target_K, price, n_each_side=2)
-    candidates = [_occ_symbol(symbol, expiry, opt_type, k) for k in strikes]
+    # ── Path A: real listed contracts from Alpaca trading API ─────────────
+    listed = fetch_listed_contracts(symbol, expiry, opt_type, target_K, price)
 
-    # Fetch snapshots for all candidates
-    snaps = fetch_option_snapshots(candidates)
-    if not snaps:
-        # Alpaca options feed returned nothing (common on paper accounts).
-        # Fall back to Black-Scholes synthetic estimates so the pipeline
-        # can produce a pending entry for the executor to attempt.
-        return _bsm_synthetic_leg(
-            symbol, expiry, opt_type, target_delta_abs,
-            target_K, price, iv, T, dte,
-        )
+    if listed:
+        # Try live snapshots for the verified-real contract symbols
+        listed_syms = [c["symbol"] for c in listed[:10]]
+        snaps = fetch_option_snapshots(listed_syms)
 
-    best      = None
-    best_diff = float("inf")
+        if snaps:
+            # Live data available — pick best by delta + liquidity
+            best      = None
+            best_diff = float("inf")
+            for sym, snap in snaps.items():
+                delta_raw = snap["delta"]
+                delta_abs = abs(delta_raw)
+                bid, ask  = snap["bid"], snap["ask"]
+                oi        = snap["open_interest"]
 
-    for sym, snap in snaps.items():
-        delta_raw = snap["delta"]     # positive for calls, negative for puts
-        delta_abs = abs(delta_raw)
-        bid       = snap["bid"]
-        ask       = snap["ask"]
-        oi        = snap["open_interest"]
+                if oi < min_oi:
+                    continue
+                mid = (bid + ask) / 2.0
+                if mid < 0.01:
+                    continue
+                spread_pct = (ask - bid) / mid if mid > 0 else 999
+                if spread_pct > max_spread:
+                    continue
 
-        # Liquidity filters
-        if oi < min_oi:
-            continue
-        mid = (bid + ask) / 2.0
-        if mid < 0.01:
-            continue
-        spread_pct = (ask - bid) / mid if mid > 0 else 999
-        if spread_pct > max_spread:
-            continue
+                try:
+                    strike_raw = int(sym[-8:]) / 1000.0
+                except (ValueError, IndexError):
+                    continue
+                if opt_type == "P" and strike_raw >= price * 1.02:
+                    continue
+                if opt_type == "C" and strike_raw <= price * 0.98:
+                    continue
 
-        # Directional check: put should be OTM (strike < price)
-        try:
-            # Extract strike from OCC symbol (last 8 chars before that)
-            strike_raw = int(sym[-8:]) / 1000.0
-        except (ValueError, IndexError):
-            continue
-        if opt_type == "P" and strike_raw >= price * 1.02:
-            continue   # skip ITM puts
-        if opt_type == "C" and strike_raw <= price * 0.98:
-            continue   # skip ITM calls (for OTM call sells)
+                diff = abs(delta_abs - target_delta_abs)
+                if diff < best_diff:
+                    best_diff = diff
+                    best = {
+                        "contract":      sym,
+                        "strike":        strike_raw,
+                        "expiry":        expiry.strftime("%Y-%m-%d"),
+                        "dte":           dte,
+                        "opt_type":      opt_type,
+                        "delta":         round(delta_raw, 4),
+                        "bid":           round(bid, 4),
+                        "ask":           round(ask, 4),
+                        "mid":           round((bid + ask) / 2.0, 4),
+                        "open_interest": oi,
+                        "spread_pct":    round(spread_pct, 4),
+                        "iv":            round(snap["iv"], 4) if snap["iv"] else None,
+                        "data_source":   "alpaca_live",
+                    }
 
-        diff = abs(delta_abs - target_delta_abs)
-        if diff < best_diff:
-            best_diff = diff
-            best = {
-                "contract":       sym,
-                "strike":         strike_raw,
-                "expiry":         expiry.strftime("%Y-%m-%d"),
-                "dte":            dte,
-                "opt_type":       opt_type,
-                "delta":          round(delta_raw, 4),
-                "bid":            round(bid, 4),
-                "ask":            round(ask, 4),
-                "mid":            round(mid, 4),
-                "open_interest":  oi,
-                "spread_pct":     round(spread_pct, 4),
-                "iv":             round(snap["iv"], 4) if snap["iv"] else None,
+            if best and best_diff <= DELTA_TOLERANCE:
+                return best
+
+        # Snapshots empty (expected on paper) — BSM-price the real contracts
+        best_diff = float("inf")
+        best_raw  = None
+
+        for c in listed[:10]:
+            strike = c["strike"]
+            if opt_type == "P" and strike >= price * 1.02:
+                continue    # skip ITM puts
+            if opt_type == "C" and strike <= price * 0.98:
+                continue    # skip ITM calls
+
+            if opt_type == "P":
+                delta = _bsm_put_delta(price, strike, T, r, iv)
+                mid   = _bsm_put_price(price, strike, T, r, iv)
+            else:
+                delta = _bsm_call_delta(price, strike, T, r, iv)
+                mid   = _bsm_call_price(price, strike, T, r, iv)
+
+            if mid < 0.05:
+                continue
+
+            diff = abs(abs(delta) - target_delta_abs)
+            if diff < best_diff:
+                best_diff = diff
+                best_raw  = (c["symbol"], strike, delta, mid)
+
+        if best_raw and best_diff <= DELTA_TOLERANCE:
+            sym, strike, delta, mid = best_raw
+            half = mid * 0.075
+            print(f"      Real contract (BSM priced): {sym}  "
+                  f"delta={delta:.2f}  mid=${mid:.2f}  (Alpaca feed dark)")
+            return {
+                "contract":      sym,
+                "strike":        strike,
+                "expiry":        expiry.strftime("%Y-%m-%d"),
+                "dte":           dte,
+                "opt_type":      opt_type,
+                "delta":         round(delta, 4),
+                "bid":           round(max(0.01, mid - half), 2),
+                "ask":           round(mid + half, 2),
+                "mid":           round(mid, 4),
+                "open_interest": None,
+                "spread_pct":    round(half * 2 / mid, 4),
+                "iv":            round(iv, 4),
+                "data_source":   "bsm_estimated",
             }
 
-    if best is None:
-        return None
-    if best_diff > DELTA_TOLERANCE:
-        print(f"    [{symbol}] {opt_type} delta mismatch: "
-              f"target={target_delta_abs:.2f}, best={abs(best['delta']):.2f}")
+        # Real contracts listed but none match delta target
+        print(f"    [{symbol}] {opt_type} delta mismatch — "
+              f"listed contracts too far from target {target_delta_abs:.2f}")
         return None
 
-    return best
+    # ── Path B: listing API unavailable — BSM synthetic (last resort) ─────
+    # Constructs a theoretical OCC symbol; orders may 422 if not listed.
+    return _bsm_synthetic_leg(
+        symbol, expiry, opt_type, target_delta_abs,
+        target_K, price, iv, T, dte,
+    )
 
 
 # ==============================================================================
