@@ -495,6 +495,13 @@ def _pick_leg(
             if best and best_diff <= DELTA_TOLERANCE:
                 return best
 
+            # Live data was available but every contract failed a filter
+            # (OI, spread, or delta).  Respect the filters — do NOT fall
+            # through to BSM pricing, which would bypass them.
+            print(f"    [{symbol}] {opt_type} live-data filters rejected all contracts "
+                  f"(OI/spread/delta — not falling back to BSM)")
+            return None
+
         # Snapshots empty (expected on paper) — BSM-price the real contracts
         best_diff = float("inf")
         best_raw  = None

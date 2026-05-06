@@ -328,8 +328,12 @@ class TestSelectContract(unittest.TestCase):
         self.assertIsNone(entry)
 
     def test_low_open_interest_skipped(self):
-        """Contracts below min OI threshold are skipped."""
+        """Contracts below min OI threshold are skipped when live data is available."""
         expiry = self._fixed_expiry()
+
+        # Simulate listing API returning real contracts near target strike
+        mock_listed = [{"symbol": "AAPL260610P00260000", "strike": 260.0,
+                        "expiry": expiry.strftime("%Y-%m-%d")}]
 
         def low_oi_snaps(contracts):
             return {c: {
@@ -339,7 +343,8 @@ class TestSelectContract(unittest.TestCase):
                 "spread_pct": 0.05,
             } for c in contracts}
 
-        with patch.object(sel, "fetch_option_snapshots", side_effect=low_oi_snaps), \
+        with patch.object(sel, "fetch_listed_contracts", return_value=mock_listed), \
+             patch.object(sel, "fetch_option_snapshots", side_effect=low_oi_snaps), \
              patch.object(sel, "_target_expirations", return_value=[expiry]):
             entry = sel.select_contract(self._candidate(), self._CFG)
         self.assertIsNone(entry)
