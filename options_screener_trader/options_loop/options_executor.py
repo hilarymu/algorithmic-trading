@@ -61,6 +61,11 @@ HARD_MARGIN_LIMIT  = 0.70    # 70% margin utilisation ceiling
 #  HTTP helpers
 # ==============================================================================
 
+# Sentinel returned by _post when Alpaca says the contract isn't listed.
+# Signals the executor to record a BSM-priced simulated fill instead of failing.
+_SIMULATED_FILL = {"_simulated": True, "id": None}
+
+
 def _post(url: str, body: dict) -> dict | None:
     try:
         data = json.dumps(body).encode()
@@ -69,6 +74,11 @@ def _post(url: str, body: dict) -> dict | None:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         body_txt = e.read().decode(errors="replace")[:200] if hasattr(e, "read") else ""
+        if e.code == 422 and "not found" in body_txt:
+            # Contract not listed on Alpaca paper (common for monthly/individual-stock
+            # options — paper only has 0-1 DTE contracts for liquid ETFs/mega-caps).
+            # Signal a simulated fill; the executor records the position at BSM mid.
+            return _SIMULATED_FILL
         print(f"    [POST {e.code}] {url[-60:]}  {body_txt}")
         return None
     except Exception as e:
@@ -201,19 +211,25 @@ def execute_entry(entry: dict, account_equity: float,
     """
     Place Alpaca paper order(s) for one pending entry.
     Returns updated position dict on success, None on failure.
+
+    When Alpaca returns 422 "asset not found" (common for monthly options on
+    individual stocks — Alpaca paper only lists 0-1 DTE contracts for liquid
+    ETFs/mega-caps), the entry is accepted as a simulated fill at the BSM mid
+    price.  Position is recorded with execution_mode='simulated'.
     """
     symbol   = entry["symbol"]
     strategy = entry["strategy"]
     qty      = config.get("position_sizing", {}).get("contracts_per_position", 1)
 
-    short_leg = entry.get("short_leg")
-    long_leg  = entry.get("long_leg")
+    short_leg  = entry.get("short_leg")
+    long_leg   = entry.get("long_leg")
     net_credit = entry.get("net_credit_est", 0)
 
     print(f"    [{symbol}] {strategy} — placing orders...")
 
     short_order_id = None
     long_order_id  = None
+    is_simulated   = False   # set True if Alpaca can't find the contract
 
     # Short leg (sell to open)
     if short_leg:
@@ -221,12 +237,18 @@ def execute_entry(entry: dict, account_equity: float,
         limit_price = short_leg["bid"] - 0.01    # slightly below bid for faster fill
         limit_price = max(round(limit_price, 2), 0.01)
         order = _place_limit_order(short_leg["contract"], side, qty, limit_price)
-        if not order:
+        if order is None:
+            # Real error (network, auth, etc.) — abort
             print(f"    [{symbol}] short leg order failed")
             return None
-        short_order_id = order.get("id")
-        print(f"      Short leg: {short_leg['contract']}  {side}  ${limit_price:.2f}  "
-              f"order={short_order_id[:8] if short_order_id else 'none'}")
+        if order.get("_simulated"):
+            is_simulated = True
+            print(f"      Short leg: {short_leg['contract']}  {side}  ${limit_price:.2f}"
+                  f"  [SIMULATED — not listed on Alpaca paper]")
+        else:
+            short_order_id = order.get("id")
+            print(f"      Short leg: {short_leg['contract']}  {side}  ${limit_price:.2f}  "
+                  f"order={short_order_id[:8] if short_order_id else 'none'}")
         time.sleep(0.5)
 
     # Long leg (buy to open, for spreads)
@@ -235,32 +257,43 @@ def execute_entry(entry: dict, account_equity: float,
         limit_price = long_leg["ask"] + 0.01     # slightly above ask for faster fill
         limit_price = round(limit_price, 2)
         order = _place_limit_order(long_leg["contract"], side, qty, limit_price)
-        if not order:
-            # CRITICAL: short leg was placed but the hedge failed.
-            # Cancel the unhedged short rather than leaving a naked position open.
-            print(f"    [{symbol}] CRITICAL: long leg failed -- attempting to cancel short leg")
-            if short_order_id:
-                try:
-                    cancel_req = urllib.request.Request(
-                        f"{TRADING_BASE}/orders/{short_order_id}",
-                        headers=HEADERS, method="DELETE"
-                    )
-                    urllib.request.urlopen(cancel_req, timeout=15)
-                    print(f"      Short leg {short_order_id[:8]} cancelled -- position NOT recorded")
-                except Exception as ce:
-                    print(f"      Cancel FAILED ({ce}) -- manually close "
-                          f"{short_leg['contract'] if short_leg else 'unknown'}")
+        if order is None:
+            if not is_simulated:
+                # CRITICAL: short leg was placed but the hedge failed.
+                # Cancel the unhedged short rather than leaving a naked position open.
+                print(f"    [{symbol}] CRITICAL: long leg failed -- attempting to cancel short leg")
+                if short_order_id:
+                    try:
+                        cancel_req = urllib.request.Request(
+                            f"{TRADING_BASE}/orders/{short_order_id}",
+                            headers=HEADERS, method="DELETE"
+                        )
+                        urllib.request.urlopen(cancel_req, timeout=15)
+                        print(f"      Short leg {short_order_id[:8]} cancelled -- position NOT recorded")
+                    except Exception as ce:
+                        print(f"      Cancel FAILED ({ce}) -- manually close "
+                              f"{short_leg['contract'] if short_leg else 'unknown'}")
+            else:
+                print(f"    [{symbol}] long leg order failed (simulated entry aborted)")
             return None   # do not record as open position
+        if order.get("_simulated"):
+            is_simulated = True
+            print(f"      Long leg:  {long_leg['contract']}  {side}  ${limit_price:.2f}"
+                  f"  [SIMULATED — not listed on Alpaca paper]")
         else:
             long_order_id = order.get("id")
             print(f"      Long leg:  {long_leg['contract']}  {side}  ${limit_price:.2f}  "
                   f"order={long_order_id[:8] if long_order_id else 'none'}")
+
+    if is_simulated:
+        print(f"      >> Simulated fill at BSM mid — position recorded for strategy tracking")
 
     # Build position record
     position = {
         "id":                    entry["id"],
         "symbol":                symbol,
         "strategy":              strategy,
+        "execution_mode":        "simulated" if is_simulated else "live",
         "regime_at_entry":       entry.get("regime"),
         "entry_date":            date.today().strftime("%Y-%m-%d"),
         "expiry":                entry.get("expiry"),

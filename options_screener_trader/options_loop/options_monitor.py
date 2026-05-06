@@ -38,6 +38,7 @@ Consecutive-loss circuit breaker
 """
 
 import json
+import math
 import time
 import urllib.request
 import urllib.error
@@ -64,6 +65,98 @@ HEADERS = {
 
 RSI_PERIOD    = 14
 RSI_BARS_DAYS = 60    # calendar-day lookback for RSI bars
+BSM_RATE      = 0.05  # risk-free rate used in BSM pricing
+
+
+# ==============================================================================
+#  BSM helpers (for pricing simulated positions that Alpaca can't quote)
+# ==============================================================================
+
+def _norm_cdf(x: float) -> float:
+    return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
+
+
+def _bsm_put_price(S: float, K: float, T: float, r: float, sigma: float) -> float:
+    if T <= 0 or sigma <= 0 or S <= 0:
+        return max(0.0, K - S)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    return K * math.exp(-r * T) * _norm_cdf(-d2) - S * _norm_cdf(-d1)
+
+
+def _bsm_call_price(S: float, K: float, T: float, r: float, sigma: float) -> float:
+    if T <= 0 or sigma <= 0 or S <= 0:
+        return max(0.0, S - K)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    return S * _norm_cdf(d1) - K * math.exp(-r * T) * _norm_cdf(d2)
+
+
+def fetch_underlying_price(symbol: str) -> float | None:
+    """
+    Fetch the most recent trade price for a stock via Alpaca equity snapshot.
+    Uses the same endpoint as iv_tracker.fetch_stock_prices() — latestTrade.p
+    — which gives a real-time/intraday price rather than a delayed daily bar.
+    """
+    url  = f"{DATA_BASE}/v2/stocks/snapshots?symbols={symbol}&feed=iex"
+    data = _get(url)
+    if not data:
+        return None
+    snap = data.get(symbol, {})
+    try:
+        return float(snap["latestTrade"]["p"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _bsm_snaps_for_simulated(position: dict) -> dict:
+    """
+    For a simulated position (Alpaca doesn't have the contracts), compute
+    theoretical option prices via BSM and return a fake-snaps dict so that
+    P&L, profit targets, and loss limits can be evaluated normally.
+
+    Uses the entry IV (iv_current_at_entry) and the current underlying price.
+    This is an approximation — IV may have changed since entry.
+    """
+    symbol     = position.get("symbol")
+    expiry_str = position.get("expiry")
+    iv         = position.get("iv_current_at_entry")
+
+    if not (symbol and expiry_str and iv and iv > 0):
+        return {}
+
+    S = fetch_underlying_price(symbol)
+    if not S:
+        return {}
+
+    expiry = datetime.strptime(expiry_str, "%Y-%m-%d").date()
+    T      = max((expiry - date.today()).days / 365.0, 0.0)
+    r      = BSM_RATE
+
+    result = {}
+    for leg in [position.get("short_leg"), position.get("long_leg")]:
+        if not leg:
+            continue
+        contract = leg.get("contract")
+        strike   = leg.get("strike")
+        opt_type = leg.get("opt_type", "P")
+        if not (contract and strike):
+            continue
+        K = float(strike)
+        if opt_type == "P":
+            mid = _bsm_put_price(S, K, T, r, float(iv))
+        else:
+            mid = _bsm_call_price(S, K, T, r, float(iv))
+        mid  = round(max(mid, 0.01), 4)
+        half = mid * 0.075
+        bid  = round(max(mid - half, 0.01), 2)
+        ask  = round(mid + half, 2)
+        result[contract] = {
+            "bid": bid, "ask": ask, "mid": mid,
+            "delta": None, "iv": float(iv),
+            "_source": "bsm_estimated",
+        }
+    return result
 
 
 # ==============================================================================
@@ -323,38 +416,50 @@ def close_position(position: dict, reason: str,
     """
     Place buy-to-close order(s) and return updated position dict.
     Limit price = mid + 5% buffer (to encourage fill on paper engine).
+
+    For simulated positions (execution_mode='simulated'), no Alpaca orders are
+    placed — the exit debit and P&L are calculated from BSM-estimated prices
+    already injected into snaps by _run_checks().
     """
-    symbol   = position["symbol"]
-    strategy = position["strategy"]
-    qty      = position.get("qty", 1)
-    short_leg = position.get("short_leg") or {}
-    long_leg  = position.get("long_leg")
+    symbol      = position["symbol"]
+    strategy    = position["strategy"]
+    qty         = position.get("qty", 1)
+    short_leg   = position.get("short_leg") or {}
+    long_leg    = position.get("long_leg")
+    is_sim      = position.get("execution_mode") == "simulated"
 
-    print(f"    [{symbol}] CLOSING ({reason})  strategy={strategy}")
+    print(f"    [{symbol}] CLOSING ({reason})  strategy={strategy}"
+          + ("  [simulated]" if is_sim else ""))
 
-    pnl_pct = compute_pnl_pct(position, snaps)
+    pnl_pct     = compute_pnl_pct(position, snaps)
     close_debit = None
 
     # Close short leg (buy to close)
     if short_leg and short_leg.get("contract") in snaps:
         sc  = short_leg["contract"]
         mid = snaps[sc]["mid"]
-        lp  = round(mid * 1.05, 2)    # 5% above mid
-        lp  = max(lp, 0.01)
-        order = _place_close_order(sc, "buy", qty, lp)
-        if order:
-            print(f"      Short leg BTC: {sc}  ${lp:.2f}  order={order.get('id','?')[:8]}")
+        if is_sim:
+            print(f"      Short leg BTC: {sc}  ${mid:.2f}  [SIMULATED — BSM estimate]")
+        else:
+            lp  = round(mid * 1.05, 2)    # 5% above mid
+            lp  = max(lp, 0.01)
+            order = _place_close_order(sc, "buy", qty, lp)
+            if order:
+                print(f"      Short leg BTC: {sc}  ${lp:.2f}  order={order.get('id','?')[:8]}")
         close_debit = (close_debit or 0) + mid
 
     # Close long leg (sell to close, for spreads)
     if long_leg and long_leg.get("contract") in snaps:
         lc  = long_leg["contract"]
         mid = snaps[lc]["mid"]
-        lp  = round(mid * 0.95, 2)    # 5% below mid
-        lp  = max(lp, 0.01)
-        order = _place_close_order(lc, "sell", qty, lp)
-        if order:
-            print(f"      Long leg STC:  {lc}  ${lp:.2f}  order={order.get('id','?')[:8]}")
+        if is_sim:
+            print(f"      Long leg STC:  {lc}  ${mid:.2f}  [SIMULATED — BSM estimate]")
+        else:
+            lp  = round(mid * 0.95, 2)    # 5% below mid
+            lp  = max(lp, 0.01)
+            order = _place_close_order(lc, "sell", qty, lp)
+            if order:
+                print(f"      Long leg STC:  {lc}  ${lp:.2f}  order={order.get('id','?')[:8]}")
         close_debit = (close_debit or 0) - mid   # reduce debit by long proceeds
 
     entry_credit = position.get("entry_credit", 0)
@@ -496,6 +601,15 @@ def _run_checks(intraday: bool = False) -> dict:
             contracts.append(ll["contract"])
 
     snaps = fetch_option_snapshots(contracts)
+
+    # Supplement with BSM estimates for simulated positions whose contracts
+    # Alpaca doesn't list (monthly options on individual stocks).
+    for pos in open_positions:
+        if pos.get("execution_mode") == "simulated":
+            bsm = _bsm_snaps_for_simulated(pos)
+            for contract, data in bsm.items():
+                if contract not in snaps:    # don't overwrite live data if present
+                    snaps[contract] = data
 
     closed_count = 0
     for pos in open_positions:
